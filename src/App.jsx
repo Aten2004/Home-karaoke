@@ -5,8 +5,7 @@ import {
   Mic, Disc3, QrCode, Smartphone, ListMusic, 
   PartyPopper, Sparkles, X, Check, Wifi, WifiOff, Loader2,
   ChevronUp, ChevronDown, Trash2, Volume2, VolumeX, Volume1,
-  Maximize2, Minimize2, SlidersHorizontal, Image as ImageIcon,
-  Link as LinkIcon
+  Maximize2, Minimize2, SlidersHorizontal, Image as ImageIcon
 } from 'lucide-react';
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
@@ -15,17 +14,6 @@ const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
 const getThumbnail = (ytId, customUrl) => {
   if (customUrl) return customUrl;
   return `https://img.youtube.com/vi/${ytId}/mqdefault.jpg`;
-};
-
-// ฟังก์ชันดึง Video ID จาก URL ทุกรูปแบบของ YouTube
-const extractYtId = (url) => {
-  if (!url) return null;
-  const cleanUrl = url.trim();
-  const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/;
-  const match = cleanUrl.match(regExp);
-  if (match && match[1]) return match[1];
-  if (cleanUrl.length === 11 && !cleanUrl.includes(' ') && !cleanUrl.includes('/')) return cleanUrl;
-  return null;
 };
 
 const DEFAULT_PRESETS = [
@@ -43,14 +31,12 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [isTvFullscreen, setIsTvFullscreen] = useState(false);
 
-  // Search & URL States
+  // Search States
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState('karaoke'); // 'karaoke' | 'original'
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
-  const [showUrlInput, setShowUrlInput] = useState(false);
-  const [directUrl, setDirectUrl] = useState('');
 
   // Remote & WebRTC States
   const [roomCode, setRoomCode] = useState('');
@@ -170,30 +156,23 @@ export default function App() {
           case 'SET_VOLUME':
             const newVol = Math.max(0, Math.min(100, data.volume));
             setVolume(newVol);
-            if (ytPlayerRef.current) {
+            if (ytPlayerRef.current?.setVolume) {
               ytPlayerRef.current.setVolume(newVol);
-              if (newVol > 0) {
+              if (newVol > 0 && isMuted) {
                 ytPlayerRef.current.unMute();
                 setIsMuted(false);
-              } else {
-                ytPlayerRef.current.mute();
-                setIsMuted(true);
               }
             }
             showToast(`🔊 ระดับเสียง: ${newVol}%`);
-            conn.send({ type: 'SYNC', volume: newVol, isMuted: newVol === 0 });
+            conn.send({ type: 'SYNC', volume: newVol, isMuted: false });
             break;
           case 'TOGGLE_MUTE':
             if (ytPlayerRef.current) {
               if (isMuted) {
-                // แก้ Bug: ปลด Mute พร้อมตั้ง Volume คืนให้ทันที
-                const targetVol = volume > 0 ? volume : 80;
                 ytPlayerRef.current.unMute();
-                ytPlayerRef.current.setVolume(targetVol);
-                setVolume(targetVol);
                 setIsMuted(false);
-                conn.send({ type: 'SYNC', isMuted: false, volume: targetVol });
-                showToast(`🔔 เปิดเสียงแล้ว (${targetVol}%)`);
+                conn.send({ type: 'SYNC', isMuted: false });
+                showToast('🔔 เปิดเสียง');
               } else {
                 ytPlayerRef.current.mute();
                 setIsMuted(true);
@@ -318,21 +297,10 @@ export default function App() {
           },
           events: {
             onReady: (e) => {
-              if (isMuted) {
-                e.target.mute();
-              } else {
-                e.target.unMute();
-                e.target.setVolume(volume);
-              }
+              e.target.setVolume(volume);
+              if (isMuted) e.target.mute();
             },
             onStateChange: (e) => {
-              // แก้ Bug: การันตีเสียงดังเมื่อวิดีโอเริ่มเล่น
-              if (e.data === window.YT.PlayerState.PLAYING) {
-                if (!isMuted && e.target.unMute) {
-                  e.target.unMute();
-                  e.target.setVolume(volume);
-                }
-              }
               if (e.data === window.YT.PlayerState.ENDED) {
                 handleNextSong();
               }
@@ -341,16 +309,6 @@ export default function App() {
         });
       } else if (ytPlayerRef.current.loadVideoById) {
         ytPlayerRef.current.loadVideoById(currentSong.ytId);
-        setTimeout(() => {
-          if (ytPlayerRef.current) {
-            if (isMuted) {
-              ytPlayerRef.current.mute();
-            } else {
-              ytPlayerRef.current.unMute();
-              ytPlayerRef.current.setVolume(volume);
-            }
-          }
-        }, 300);
       }
     };
 
@@ -376,7 +334,6 @@ export default function App() {
     });
   };
 
-  // ค้นหาเพลงผ่าน YouTube Data API v3
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -413,29 +370,6 @@ export default function App() {
     } finally {
       setIsSearching(false);
     }
-  };
-
-  // จัดการใส่ URL YouTube โดยตรง (ไม่เสียโควต้า API)
-  const handleAddDirectUrl = (playNext = false) => {
-    const videoId = extractYtId(directUrl);
-    if (!videoId) {
-      alert('กรุณาใส่ลิงก์ YouTube หรือ Video ID ที่ถูกต้อง');
-      return;
-    }
-
-    const newSong = {
-      id: `${videoId}-${Date.now()}`,
-      ytId: videoId,
-      title: `เพลงจากลิงก์ YouTube (${videoId})`,
-      artist: 'ลิงก์ตรง (Direct URL)',
-      thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
-      isKaraoke: searchMode === 'karaoke',
-    };
-
-    addSong(newSong, playNext);
-    setDirectUrl('');
-    setShowUrlInput(false);
-    showToast(playNext ? '⚡ แทรกเพลงจากลิงก์แล้ว' : '✔ เพิ่มเพลงจากลิงก์ในคิวแล้ว');
   };
 
   const addSong = (song, playNext = false) => {
@@ -563,47 +497,6 @@ export default function App() {
                     {isSearching ? <Loader2 size={14} className="animate-spin" /> : 'ค้นหา'}
                   </button>
                 </form>
-
-                {/* ปุ่มเปิดช่องวางลิงก์ YouTube โดยตรง */}
-                <div className="mt-2 pt-2 border-t border-slate-800/80">
-                  <button
-                    type="button"
-                    onClick={() => setShowUrlInput(!showUrlInput)}
-                    className="text-[11px] font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1.5 transition active:scale-95"
-                  >
-                    <LinkIcon size={13} />
-                    <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์ YouTube (ไม่เสียโควต้า)'}</span>
-                  </button>
-
-                  {showUrlInput && (
-                    <div className="mt-2 p-2.5 bg-slate-950 rounded-xl border border-purple-500/30 space-y-2">
-                      <input
-                        type="text"
-                        value={directUrl}
-                        onChange={(e) => setDirectUrl(e.target.value)}
-                        placeholder="วางลิงก์ YouTube (เช่น https://youtu.be/...)"
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-500"
-                      />
-                      <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleAddDirectUrl(true)}
-                          className="px-2.5 py-1 bg-pink-600/20 text-pink-300 rounded-lg text-[10px] font-bold active:scale-95"
-                        >
-                          แทรกคิว
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAddDirectUrl(false)}
-                          className="px-2.5 py-1 bg-purple-600 text-white rounded-lg text-[10px] font-bold active:scale-95"
-                        >
-                          + เพิ่มในคิว
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
                 {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
               </div>
 
@@ -614,6 +507,7 @@ export default function App() {
                 </div>
                 {(searchResults.length > 0 ? searchResults : DEFAULT_PRESETS).map((song) => (
                   <div key={song.id} className="flex items-center gap-3 p-2 bg-slate-900 border border-slate-800 rounded-2xl">
+                    {/* ภาพปกเพลง / ศิลปิน */}
                     <div className="relative w-16 h-12 rounded-xl overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
                       <img 
                         src={getThumbnail(song.ytId, song.thumbnail)} 
@@ -648,6 +542,7 @@ export default function App() {
           {/* TAB 2: จัดการคิวเพลง */}
           {mobileTab === 'queue' && (
             <div className="space-y-4">
+              {/* เพลงที่กำลังร้องอยู่ พร้อมรูปปก */}
               <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-900/30 to-slate-900 border border-purple-500/30 flex items-center gap-3">
                 <div className="w-16 h-12 rounded-xl overflow-hidden bg-black shrink-0 border border-purple-500/40">
                   <img 
@@ -683,6 +578,7 @@ export default function App() {
                       <div key={idx} className="flex items-center gap-2.5 p-2 bg-slate-900 border border-slate-800 rounded-2xl">
                         <span className="text-xs font-bold text-purple-400 w-4 text-center shrink-0">{idx + 1}</span>
                         
+                        {/* ภาพปกในคิว */}
                         <div className="w-12 h-9 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
                           <img 
                             src={getThumbnail(song.ytId, song.thumbnail)} 
@@ -696,6 +592,7 @@ export default function App() {
                           <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                         </div>
 
+                        {/* ปุ่มจัดลำดับคิว */}
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             disabled={idx === 0}
@@ -786,9 +683,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => sendCommand({ type: 'TOGGLE_MUTE' })}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition ${
-                      isMuted ? 'bg-rose-600 text-white ring-2 ring-rose-400' : 'bg-slate-800 text-slate-300'
-                    }`}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 ${isMuted ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300'}`}
                   >
                     {isMuted ? 'เปิดเสียง' : 'ปิดเสียง'}
                   </button>
@@ -956,7 +851,7 @@ export default function App() {
             )}
           </div>
 
-          {/* แถบ Now Playing ด้านล่างจอทีวี */}
+          {/* แถบ Now Playing ด้านล่างจอทีวี พร้อมภาพปก */}
           <div className="flex items-center justify-between p-4 bg-slate-900 border-t border-slate-800">
             <div className="flex items-center gap-3 truncate flex-1 pr-4">
               <div className="w-14 h-10 rounded-lg overflow-hidden bg-black shrink-0 border border-purple-500/40">
@@ -998,7 +893,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ขวา: ค้นหา & คิวเพลงบนทีวี */}
+        {/* ขวา: ค้นหา & คิวเพลงบนทีวี พร้อมรูปปก */}
         {!isTvFullscreen && (
           <div className="w-full lg:w-96 border-l border-slate-800 bg-slate-950 flex flex-col h-72 lg:h-full">
             <div className="p-4 border-b border-slate-800">
@@ -1028,51 +923,11 @@ export default function App() {
                   {isSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
                 </button>
               </form>
-
-              {/* ปุ่มเปิดช่องใส่ลิงก์ URL บนทีวี */}
-              <div className="mt-2 pt-2 border-t border-slate-800/80">
-                <button
-                  type="button"
-                  onClick={() => setShowUrlInput(!showUrlInput)}
-                  className="text-[11px] font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1.5 transition"
-                >
-                  <LinkIcon size={13} />
-                  <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์ YouTube (ไม่เสียโควต้า)'}</span>
-                </button>
-
-                {showUrlInput && (
-                  <div className="mt-2 p-2 bg-slate-900 rounded-xl border border-purple-500/30 space-y-2">
-                    <input
-                      type="text"
-                      value={directUrl}
-                      onChange={(e) => setDirectUrl(e.target.value)}
-                      placeholder="วางลิงก์ YouTube ที่นี่..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-purple-500"
-                    />
-                    <div className="flex justify-end gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleAddDirectUrl(true)}
-                        className="px-2 py-1 bg-pink-600/20 text-pink-300 rounded text-[10px] font-bold"
-                      >
-                        แทรก
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleAddDirectUrl(false)}
-                        className="px-2 py-1 bg-purple-600 text-white rounded text-[10px] font-bold"
-                      >
-                        + คิว
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {/* ผลการค้นหา */}
               {searchResults.length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
