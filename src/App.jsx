@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import Peer from 'peerjs';
 import { 
   Play, Pause, SkipForward, RotateCcw, Search, 
-  Mic, Disc3, Settings, QrCode, Smartphone, 
-  ListMusic, PartyPopper, Sparkles, X, Check, ExternalLink 
+  Mic, Disc3, QrCode, Smartphone, ListMusic, 
+  PartyPopper, Sparkles, X, Check, Wifi, WifiOff, Loader2
 } from 'lucide-react';
 
-// รายการเพลงเริ่มต้น (ใช้ Video ID คลิปคาราโอเกะจริงที่เปิดบนเว็บได้แน่นอน)
+// ดึง API Key จากไฟล์ .env อัตโนมัติ (ทั้งบนคอมและมือถือใช้ค่าเดียวกัน)
+const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
+
 const DEFAULT_PRESETS = [
   { id: 'kJQP7kiw5Fk', ytId: 'kJQP7kiw5Fk', title: 'Luis Fonsi - Despacito (Karaoke Version)', artist: 'Sing King', isKaraoke: true },
   { id: 'fJ9rUzIMcZQ', ytId: 'fJ9rUzIMcZQ', title: 'Queen - Bohemian Rhapsody (Karaoke)', artist: 'KaraokeOnVEVO', isKaraoke: true },
@@ -15,27 +17,23 @@ const DEFAULT_PRESETS = [
 ];
 
 export default function App() {
-  // สถานะเพลงและคิว
   const [currentSong, setCurrentSong] = useState(DEFAULT_PRESETS[0]);
   const [queue, setQueue] = useState(DEFAULT_PRESETS.slice(1));
-  const [isPlaying, setIsPlaying] = useState(true);
 
-  // ระบบค้นหา & YouTube API
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('yt_api_key') || '');
+  // Search States
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState('karaoke'); // 'karaoke' | 'original'
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
 
-  // การเชื่อมต่อรีโมท (WebRTC)
+  // Remote & WebRTC States
   const [roomCode, setRoomCode] = useState('');
-  const [connectedDevices, setConnectedDevices] = useState(0);
   const [isRemoteMode, setIsRemoteMode] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected'); // 'connecting' | 'connected' | 'disconnected'
   const [inputRoomCode, setInputRoomCode] = useState('');
-
-  // หน้าต่าง Modal ป๊อปอัป
   const [showRemoteModal, setShowRemoteModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
   const peerRef = useRef(null);
   const connRef = useRef(null);
@@ -43,25 +41,31 @@ export default function App() {
   const queueRef = useRef(queue);
   queueRef.current = queue;
 
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(''), 2500);
+  };
+
   // 1. ตรวจสอบว่าเปิดมาจาก QR Code รีโมทหรือไม่ (?room=XXXX)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam) {
-      setInputRoomCode(roomParam.toUpperCase());
       setIsRemoteMode(true);
-      connectAsRemote(roomParam.toUpperCase());
+      const code = roomParam.trim().toUpperCase();
+      setInputRoomCode(code);
+      connectToHost(code);
     } else {
-      initHostPlayer();
+      initHost();
     }
+
     return () => {
       if (peerRef.current) peerRef.current.destroy();
     };
   }, []);
 
-  // 2. เริ่มระบบโฮสต์หลัก (เปิดเว็บมาเป็นโฮสต์พร้อมเล่นทันที + รอรีโมทเชื่อมต่อเงียบๆ)
-  const initHostPlayer = () => {
-    // โหลด YouTube IFrame API
+  // 2. เริ่มการทำงานฝั่งหน้าจอทีวี (Host)
+  const initHost = () => {
     if (!window.YT) {
       const tag = document.createElement('script');
       tag.src = 'https://www.youtube.com/iframe_api';
@@ -76,43 +80,87 @@ export default function App() {
 
     peer.on('connection', (conn) => {
       connRef.current = conn;
-      setConnectedDevices((prev) => prev + 1);
+      setConnectionStatus('connected');
+      showToast('📱 รีโมทมือถือเชื่อมต่อสำเร็จแล้ว!');
 
-      // ส่งคิวปัจจุบันไปให้รีโมท
+      // ซิงก์คิวให้มือถือ
       setTimeout(() => {
         conn.send({ type: 'SYNC', queue: queueRef.current, currentSong });
       }, 500);
 
       conn.on('data', (data) => {
-        switch (data.type) {
-          case 'ADD_QUEUE':
-            setQueue((prev) => [...prev, data.song]);
-            break;
-          case 'PLAY_NEXT_NOW':
-            setQueue((prev) => [data.song, ...prev]);
-            break;
-          case 'SKIP':
-            handleNextSong();
-            break;
-          case 'REPLAY':
-            if (ytPlayerRef.current?.seekTo) {
-              ytPlayerRef.current.seekTo(0);
-              ytPlayerRef.current.playVideo();
-            }
-            break;
-          case 'SFX':
-            playSfx(data.sound);
-            break;
-          default:
-            break;
+        if (data.type === 'ADD_QUEUE') {
+          setQueue((prev) => {
+            const next = [...prev, data.song];
+            conn.send({ type: 'SYNC', queue: next });
+            return next;
+          });
+          showToast(`+ เพิ่มเพลง: ${data.song.title}`);
+        } else if (data.type === 'PLAY_NEXT') {
+          setQueue((prev) => {
+            const next = [data.song, ...prev];
+            conn.send({ type: 'SYNC', queue: next });
+            return next;
+          });
+          showToast(`⚡ แทรกคิว: ${data.song.title}`);
+        } else if (data.type === 'SKIP') {
+          handleNextSong();
+        } else if (data.type === 'REPLAY') {
+          if (ytPlayerRef.current?.seekTo) {
+            ytPlayerRef.current.seekTo(0);
+            ytPlayerRef.current.playVideo();
+          }
+        } else if (data.type === 'SFX') {
+          triggerSfx(data.sound);
         }
       });
 
-      conn.on('close', () => setConnectedDevices((prev) => Math.max(0, prev - 1)));
+      conn.on('close', () => setConnectionStatus('disconnected'));
     });
   };
 
-  // 3. ควบคุมเครื่องเล่น YouTube
+  // 3. เริ่มการทำงานฝั่งมือถือ (Remote Client)
+  const connectToHost = (targetCode) => {
+    if (!targetCode) return;
+    setConnectionStatus('connecting');
+
+    if (peerRef.current) peerRef.current.destroy();
+
+    const peer = new Peer();
+    peerRef.current = peer;
+
+    peer.on('open', () => {
+      const conn = peer.connect(`KARAOKE-${targetCode}`, { reliable: true });
+      connRef.current = conn;
+
+      conn.on('open', () => {
+        setConnectionStatus('connected');
+        setShowRemoteModal(false);
+      });
+
+      conn.on('data', (data) => {
+        if (data.type === 'SYNC') {
+          if (data.queue) setQueue(data.queue);
+          if (data.currentSong) setCurrentSong(data.currentSong);
+        }
+      });
+
+      conn.on('close', () => setConnectionStatus('disconnected'));
+      conn.on('error', () => setConnectionStatus('disconnected'));
+    });
+
+    peer.on('error', () => {
+      setConnectionStatus('disconnected');
+    });
+  };
+
+  const sendCommand = (payload) => {
+    if (connRef.current && connectionStatus === 'connected') {
+      connRef.current.send(payload);
+    }
+  };
+
+  // ควบคุม YouTube Player ฝั่งทีวี
   useEffect(() => {
     if (isRemoteMode || !currentSong) return;
 
@@ -150,43 +198,76 @@ export default function App() {
     setQueue((prev) => {
       if (prev.length > 0) {
         const next = prev[0];
+        const remaining = prev.slice(1);
         setCurrentSong(next);
-        return prev.slice(1);
+        if (connRef.current) {
+          connRef.current.send({ type: 'SYNC', queue: remaining, currentSong: next });
+        }
+        return remaining;
       }
       return prev;
     });
   };
 
-  // 4. สลับไปโหมดรีโมทมือถือ
-  const connectAsRemote = (code) => {
-    const targetCode = (code || inputRoomCode).trim().toUpperCase();
-    if (!targetCode) return;
+  // ค้นหาเพลงผ่าน YouTube Data API v3
+  const handleSearch = async (e) => {
+    if (e) e.preventDefault();
+    if (!searchQuery.trim()) return;
 
-    const peer = new Peer();
-    peerRef.current = peer;
+    if (!API_KEY) {
+      setSearchError('ยังไม่ได้ใส่ VITE_YOUTUBE_API_KEY ในไฟล์ .env');
+      return;
+    }
 
-    peer.on('open', () => {
-      const conn = peer.connect(`KARAOKE-${targetCode}`);
-      connRef.current = conn;
-      conn.on('open', () => {
-        setIsRemoteMode(true);
-        setShowRemoteModal(false);
-      });
-    });
-  };
+    setIsSearching(true);
+    setSearchError('');
+    try {
+      const query = searchMode === 'karaoke' 
+        ? `${searchQuery.trim()} คาราโอเกะ karaoke` 
+        : `${searchQuery.trim()} official mv`;
 
-  const sendCommand = (payload) => {
-    if (connRef.current) {
-      connRef.current.send(payload);
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q=${encodeURIComponent(query)}&key=${API_KEY}`
+      );
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+
+      const items = (data.items || []).map((item) => ({
+        id: item.id.videoId,
+        ytId: item.id.videoId,
+        title: item.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'"),
+        artist: item.snippet.channelTitle,
+        thumbnail: item.snippet.thumbnails?.medium?.url,
+        isKaraoke: searchMode === 'karaoke',
+      }));
+      setSearchResults(items);
+    } catch (err) {
+      setSearchError('ค้นหาล้มเหลว: ' + err.message);
+    } finally {
+      setIsSearching(false);
     }
   };
 
-  // เสียง Sound Effect (Synthesized)
-  const playSfx = (type) => {
+  const addSong = (song, playNext = false) => {
+    if (isRemoteMode) {
+      sendCommand({ type: playNext ? 'PLAY_NEXT' : 'ADD_QUEUE', song });
+      showToast(playNext ? '⚡ แทรกคิวบนทีวีแล้ว' : '✔ เพิ่มลงคิวทีวีแล้ว');
+    } else {
+      if (playNext) {
+        setQueue((prev) => [song, ...prev]);
+        showToast('⚡ แทรกคิวแล้ว');
+      } else {
+        setQueue((prev) => [...prev, song]);
+        showToast('✔ เพิ่มเพลงลงคิวแล้ว');
+      }
+    }
+  };
+
+  const triggerSfx = (type) => {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       if (type === 'applause') {
-        const bufferSize = ctx.sampleRate * 1.5;
+        const bufferSize = ctx.sampleRate * 1.2;
         const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
@@ -205,87 +286,58 @@ export default function App() {
         gain.connect(ctx.destination);
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(450, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(900, ctx.currentTime + 0.35);
+        osc.frequency.exponentialRampToValueAtTime(900, ctx.currentTime + 0.3);
         gain.gain.setValueAtTime(0.2, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
         osc.start();
-        osc.stop(ctx.currentTime + 0.4);
+        osc.stop(ctx.currentTime + 0.35);
       }
     } catch (e) {
       console.log(e);
     }
   };
 
-  // ค้นหาเพลงผ่าน YouTube Data API v3
-  const handleSearch = async (e) => {
-    if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
-
-    if (!apiKey) {
-      setShowSettingsModal(true);
-      return;
-    }
-
-    setIsSearching(true);
-    try {
-      const query = searchMode === 'karaoke' 
-        ? `${searchQuery.trim()} คาราโอเกะ karaoke` 
-        : `${searchQuery.trim()} official mv`;
-
-      const res = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q=${encodeURIComponent(query)}&key=${apiKey}`
-      );
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-
-      const items = (data.items || []).map((item) => ({
-        id: item.id.videoId,
-        ytId: item.id.videoId,
-        title: item.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'"),
-        artist: item.snippet.channelTitle,
-        thumbnail: item.snippet.thumbnails?.medium?.url,
-        isKaraoke: searchMode === 'karaoke',
-      }));
-      setSearchResults(items);
-    } catch (err) {
-      alert('ค้นหาไม่สำเร็จ: ' + err.message);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const addSong = (song, playNext = false) => {
-    if (isRemoteMode) {
-      sendCommand({ type: playNext ? 'PLAY_NEXT_NOW' : 'ADD_QUEUE', song });
-    } else {
-      if (playNext) {
-        setQueue((prev) => [song, ...prev]);
-      } else {
-        setQueue((prev) => [...prev, song]);
-      }
-    }
-  };
-
   // =============================================================
-  // หน้าต่างเฉพาะโหมดรีโมทมือถือ (เมื่อสแกนเข้ามา)
+  // หน้าจอมือถือ (MOBILE REMOTE VIEW)
   // =============================================================
   if (isRemoteMode) {
     return (
-      <div className="max-w-md mx-auto min-h-screen p-4 flex flex-col text-slate-100">
+      <div className="max-w-md mx-auto min-h-screen p-4 flex flex-col text-slate-100 bg-slate-950">
+        {/* แถบหัวแสดงสถานะเชื่อมต่อ */}
         <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Smartphone className="text-purple-400" size={20} />
-            <span className="font-bold">รีโมทควบคุมทีวี</span>
+            <span className="font-bold text-sm">รีโมทคาราโอเกะ</span>
           </div>
-          <button 
-            onClick={() => { setIsRemoteMode(false); window.location.search = ''; }}
-            className="text-xs text-slate-400 hover:text-white"
-          >
-            สลับเป็นหน้าเล่นปกติ
-          </button>
+
+          <div className="flex items-center gap-2">
+            {connectionStatus === 'connected' ? (
+              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-emerald-500/20 text-emerald-400 rounded-full font-bold">
+                <Wifi size={13} /> ต่อติดแล้ว ({inputRoomCode})
+              </span>
+            ) : connectionStatus === 'connecting' ? (
+              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-amber-500/20 text-amber-300 rounded-full font-bold">
+                <Loader2 size={13} className="animate-spin" /> กำลังต่อทีวี...
+              </span>
+            ) : (
+              <button
+                onClick={() => connectToHost(inputRoomCode)}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-rose-500/20 text-rose-300 rounded-full font-bold active:scale-95"
+              >
+                <WifiOff size={13} /> หลุด (กดต่อใหม่)
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* ปุ่มควบคุมด่วน & ซาวด์เอฟเฟกต์ */}
+        {/* แจ้งเตือน Toast ลอย */}
+        {toastMessage && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-full shadow-lg">
+            {toastMessage}
+          </div>
+        )}
+
+        {/* แผงปุ่มลัด สั่งทีวี */}
         <div className="grid grid-cols-4 gap-2 mb-4">
           <button onClick={() => sendCommand({ type: 'SKIP' })} className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 active:scale-95">
             <SkipForward size={18} className="text-purple-400" /> ข้ามเพลง
@@ -301,18 +353,18 @@ export default function App() {
           </button>
         </div>
 
-        {/* ค้นหาเพลง */}
+        {/* กล่องค้นหาเพลง */}
         <div className="p-3 bg-slate-900 rounded-2xl border border-slate-800 mb-4">
           <div className="flex gap-2 mb-2">
             <button
               onClick={() => setSearchMode('karaoke')}
-              className={`flex-1 py-1 text-xs font-bold rounded-lg ${searchMode === 'karaoke' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${searchMode === 'karaoke' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}
             >
               🎤 คาราโอเกะ
             </button>
             <button
               onClick={() => setSearchMode('original')}
-              className={`flex-1 py-1 text-xs font-bold rounded-lg ${searchMode === 'original' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${searchMode === 'original' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}
             >
               🎵 เพลงต้นฉบับ
             </button>
@@ -322,28 +374,36 @@ export default function App() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="พิมพ์ชื่อเพลง..."
-              className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-purple-500"
+              placeholder="พิมพ์ชื่อเพลง หรือศิลปิน..."
+              className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-purple-500"
             />
-            <button type="submit" className="px-3 bg-purple-600 rounded-xl text-xs font-bold">
-              ค้นหา
+            <button 
+              type="submit" 
+              disabled={isSearching} 
+              className="px-4 bg-purple-600 rounded-xl text-xs font-bold flex items-center gap-1"
+            >
+              {isSearching ? <Loader2 size={14} className="animate-spin" /> : 'ค้นหา'}
             </button>
           </form>
+          {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
         </div>
 
-        {/* ผลลัพธ์ / เพลงแนะนำ */}
-        <div className="space-y-2 overflow-y-auto flex-1">
+        {/* รายการเพลง */}
+        <div className="space-y-2 overflow-y-auto flex-1 pb-10">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+            {searchResults.length > 0 ? 'ผลการค้นหา' : 'เพลงแนะนำ'}
+          </div>
           {(searchResults.length > 0 ? searchResults : DEFAULT_PRESETS).map((song) => (
             <div key={song.id} className="flex items-center justify-between p-2.5 bg-slate-900 border border-slate-800 rounded-xl">
               <div className="truncate flex-1 pr-2">
                 <p className="text-xs font-semibold truncate text-white">{song.title}</p>
-                <p className="text-[11px] text-slate-400 truncate">{song.artist}</p>
+                <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
               </div>
               <div className="flex gap-1.5">
-                <button onClick={() => addSong(song, true)} className="px-2 py-1 bg-pink-600/20 text-pink-300 rounded text-[10px] font-bold">
-                  แทรกคิว
+                <button onClick={() => addSong(song, true)} className="px-2.5 py-1 bg-pink-600/20 text-pink-300 rounded-lg text-[10px] font-bold active:scale-95">
+                  แทรก
                 </button>
-                <button onClick={() => addSong(song, false)} className="px-2 py-1 bg-purple-600 text-white rounded text-[10px] font-bold">
+                <button onClick={() => addSong(song, false)} className="px-2.5 py-1 bg-purple-600 text-white rounded-lg text-[10px] font-bold active:scale-95">
                   + จอง
                 </button>
               </div>
@@ -355,102 +415,85 @@ export default function App() {
   }
 
   // =============================================================
-  // หน้าหลัก: คาราโอเกะตัวเต็ม (ใช้งานได้ทันทีบนจอคอม/ทีวี/มือถือ)
+  // หน้าจอหลัก (TV / DESKTOP VIEW)
   // =============================================================
-  const remoteConnectUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
-  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(remoteConnectUrl)}`;
+  const remoteUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(remoteUrl)}`;
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden">
-      {/* แถบเมนูด้านบน */}
-      <header className="flex items-center justify-between px-6 py-3 bg-slate-900/90 border-b border-slate-800">
+      {/* Toast Alert ลอย */}
+      {toastMessage && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-purple-600 text-white text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-800">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-purple-600/20 text-purple-400">
             <Mic size={22} />
           </div>
           <div>
             <h1 className="font-bold text-base leading-tight">Karaoke Station</h1>
-            <p className="text-[11px] text-slate-400">ร้องคาราโอเกะออนไลน์ฟรี</p>
+            <p className="text-[11px] text-slate-400">ร้องคาราโอเกะออนไลน์</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* ปุ่มตัวเลือกเชื่อมต่อรีโมท */}
-          <button
-            onClick={() => setShowRemoteModal(true)}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-90 transition shadow-lg shadow-purple-600/20"
-          >
-            <Smartphone size={15} />
-            <span>เชื่อมต่อรีโมท</span>
-            {connectedDevices > 0 && (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-          </button>
-
-          {/* ปุ่มตั้งค่า API Key */}
-          <button
-            onClick={() => setShowSettingsModal(true)}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-            title="ตั้งค่า YouTube API"
-          >
-            <Settings size={18} />
-          </button>
-        </div>
+        <button
+          onClick={() => setShowRemoteModal(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-90 transition shadow-lg"
+        >
+          <Smartphone size={16} />
+          <span>เชื่อมต่อรีโมท</span>
+          {connectionStatus === 'connected' && (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          )}
+        </button>
       </header>
 
-      {/* พื้นที่แสดงผลหลัก */}
+      {/* Content Area */}
       <div className="flex flex-1 flex-col lg:flex-row overflow-hidden">
-        {/* ฝั่งซ้าย: ตัวเล่นวิดีโอ & ควบคุม */}
+        {/* ซ้าย: เครื่องเล่น YouTube */}
         <div className="flex-1 flex flex-col bg-black">
           <div className="relative flex-1 flex items-center justify-center bg-black">
             <div id="karaoke-player" className="w-full h-full" />
           </div>
 
-          {/* แถบสถานะเพลงที่กำลังเล่น */}
           <div className="flex items-center justify-between p-4 bg-slate-900 border-t border-slate-800">
-            <div className="flex items-center gap-3 truncate">
-              <span className="text-xs px-2 py-1 bg-purple-500/20 text-purple-300 rounded-md font-semibold">
-                {currentSong?.isKaraoke ? '🎤 คาราโอเกะ' : '🎵 เพลงปกติ'}
+            <div className="truncate flex-1 pr-4">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                {currentSong?.isKaraoke ? '🎤 คาราโอเกะ' : '🎵 เพลงต้นฉบับ'}
               </span>
-              <div className="truncate">
-                <h2 className="text-sm font-bold text-white truncate">{currentSong?.title}</h2>
-                <p className="text-xs text-slate-400 truncate">{currentSong?.artist}</p>
-              </div>
+              <h2 className="text-sm font-bold text-white truncate mt-0.5">{currentSong?.title}</h2>
+              <p className="text-xs text-slate-400 truncate">{currentSong?.artist}</p>
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => playSfx('applause')}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95"
-                title="เสียงปรบมือ"
-              >
+              <button onClick={() => triggerSfx('applause')} className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95">
                 <PartyPopper size={18} />
               </button>
-              <button
+              <button 
                 onClick={() => {
                   if (ytPlayerRef.current?.seekTo) {
                     ytPlayerRef.current.seekTo(0);
                     ytPlayerRef.current.playVideo();
                   }
-                }}
+                }} 
                 className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95"
-                title="ร้องซ้ำ"
               >
                 <RotateCcw size={18} />
               </button>
-              <button
-                onClick={handleNextSong}
-                className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition shadow active:scale-95"
-              >
+              <button onClick={handleNextSong} className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition active:scale-95">
                 <SkipForward size={16} /> ข้ามเพลง
               </button>
             </div>
           </div>
         </div>
 
-        {/* ฝั่งขวา: ค้นหาเพลง & รายการคิว */}
+        {/* ขวา: ค้นหาเพลง & คิว */}
         <div className="w-full lg:w-96 border-l border-slate-800 bg-slate-950 flex flex-col h-72 lg:h-full">
-          {/* ช่องค้นหา */}
           <div className="p-4 border-b border-slate-800">
             <div className="flex gap-2 mb-2">
               <button
@@ -474,23 +517,19 @@ export default function App() {
                 placeholder="ค้นหาชื่อเพลง หรือศิลปิน..."
                 className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-purple-500"
               />
-              <button
-                type="submit"
-                disabled={isSearching}
-                className="px-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold flex items-center gap-1"
-              >
-                <Search size={14} />
+              <button type="submit" disabled={isSearching} className="px-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold flex items-center gap-1">
+                {isSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
               </button>
             </form>
+            {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
           </div>
 
-          {/* รายการเพลง (ผลการค้นหา หรือ คิวเพลง) */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {searchResults.length > 0 && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-bold text-purple-400 uppercase tracking-wider">ผลการค้นหา</span>
-                  <button onClick={() => setSearchResults([])} className="text-[11px] text-slate-500 hover:text-white">ล้างผลลัพธ์</button>
+                  <button onClick={() => setSearchResults([])} className="text-[11px] text-slate-500 hover:text-white">ล้างผล</button>
                 </div>
                 <div className="space-y-1.5">
                   {searchResults.map((song) => (
@@ -515,140 +554,53 @@ export default function App() {
               </span>
             </div>
 
-            {queue.length === 0 ? (
-              <div className="text-center py-8 text-slate-600 text-xs">
-                ไม่มีเพลงในคิว ค้นหาหรือเลือกเพลงด้านล่างได้เลย
-              </div>
-            ) : (
-              queue.map((song, idx) => (
-                <div key={idx} className="flex items-center justify-between p-2 rounded-xl bg-slate-900/70 border border-slate-800/80">
-                  <div className="flex items-center gap-2 truncate flex-1">
-                    <span className="text-xs font-bold text-slate-500 w-4 text-center">{idx + 1}</span>
-                    <div className="truncate">
-                      <p className="text-xs font-semibold text-white truncate">{song.title}</p>
-                      <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
-                    </div>
+            {queue.map((song, idx) => (
+              <div key={idx} className="flex items-center justify-between p-2 rounded-xl bg-slate-900/70 border border-slate-800/80">
+                <div className="flex items-center gap-2 truncate flex-1">
+                  <span className="text-xs font-bold text-slate-500 w-4 text-center">{idx + 1}</span>
+                  <div className="truncate">
+                    <p className="text-xs font-semibold text-white truncate">{song.title}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                   </div>
-                  <button
-                    onClick={() => setQueue((prev) => prev.filter((_, i) => i !== idx))}
-                    className="text-slate-500 hover:text-rose-400 p-1"
-                  >
-                    <X size={14} />
-                  </button>
                 </div>
-              ))
-            )}
-
-            {/* เพลงแนะนำเริ่มต้น */}
-            <div className="pt-3 border-t border-slate-800/80">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-2">เพลงแนะนำ</span>
-              <div className="space-y-1.5">
-                {DEFAULT_PRESETS.map((song) => (
-                  <div key={song.id} className="flex items-center justify-between p-2 rounded-xl bg-slate-900/40 border border-slate-800/50">
-                    <div className="truncate flex-1 pr-2">
-                      <p className="text-xs font-semibold text-slate-300 truncate">{song.title}</p>
-                    </div>
-                    <button onClick={() => addSong(song, false)} className="px-2 py-0.5 bg-slate-800 hover:bg-purple-600 text-slate-300 hover:text-white rounded text-[10px] font-bold">
-                      + คิว
-                    </button>
-                  </div>
-                ))}
+                <button onClick={() => setQueue((prev) => prev.filter((_, i) => i !== idx))} className="text-slate-500 hover:text-rose-400 p-1">
+                  <X size={14} />
+                </button>
               </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* ============================================================= */}
-      {/* Modal: เชื่อมต่อรีโมทมือถือ */}
-      {/* ============================================================= */}
+      {/* Modal QR Code เชื่อมต่อรีโมท */}
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-3xl p-6 relative">
-            <button
-              onClick={() => setShowRemoteModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
-            >
+            <button onClick={() => setShowRemoteModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-white">
               <X size={20} />
             </button>
 
-            <div className="text-center mb-6">
+            <div className="text-center mb-4">
               <div className="w-12 h-12 rounded-2xl bg-purple-600/20 text-purple-400 mx-auto flex items-center justify-center mb-3">
                 <QrCode size={24} />
               </div>
               <h3 className="font-bold text-lg text-white">ใช้มือถือเป็นรีโมท</h3>
               <p className="text-xs text-slate-400 mt-1">
-                สแกน QR Code ด้วยกล้องมือถือ เพื่อเปิดหน้ารีโมทค้นหาเพลง
+                สแกน QR Code ด้วยกล้องมือถือ เพื่อเริ่มสั่งงาน
               </p>
             </div>
 
             <div className="flex flex-col items-center justify-center p-4 bg-slate-950 rounded-2xl border border-slate-800 mb-4">
-              <img src={qrCodeUrl} alt="QR Code" className="w-44 h-44 rounded-xl p-2 bg-white" />
+              <img src={qrCodeUrl} alt="QR Code" className="w-48 h-48 rounded-xl p-2 bg-white" />
               <div className="text-center mt-3">
-                <span className="text-[11px] text-slate-400 uppercase tracking-wider">หรือใส่รหัสห้อง:</span>
-                <div className="text-2xl font-black text-purple-400 tracking-widest mt-0.5">{roomCode}</div>
+                <span className="text-[11px] text-slate-400 uppercase tracking-wider">รหัสห้อง:</span>
+                <div className="text-3xl font-black text-purple-400 tracking-widest mt-0.5">{roomCode}</div>
               </div>
             </div>
 
-            {/* ทางเลือก: นำเครื่องนี้ไปคุมจออื่น */}
-            <div className="pt-4 border-t border-slate-800">
-              <p className="text-xs text-slate-400 mb-2">หรือต้องการใช้หน้านี้ไปคุมจออื่น?</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  maxLength={4}
-                  value={inputRoomCode}
-                  onChange={(e) => setInputRoomCode(e.target.value.toUpperCase())}
-                  placeholder="รหัส 4 หลัก"
-                  className="w-28 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-center font-bold uppercase focus:outline-none"
-                />
-                <button
-                  onClick={() => connectAsRemote(inputRoomCode)}
-                  className="flex-1 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold transition"
-                >
-                  เชื่อมต่อ
-                </button>
-              </div>
+            <div className="text-center text-xs text-slate-400">
+              สถานะ: {connectionStatus === 'connected' ? <span className="text-emerald-400 font-bold">● มือถือเชื่อมต่อแล้ว</span> : <span className="text-amber-400">○ รอการสแกน...</span>}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* ============================================================= */}
-      {/* Modal: ตั้งค่า YouTube API Key */}
-      {/* ============================================================= */}
-      {showSettingsModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-3xl p-6 relative">
-            <button
-              onClick={() => setShowSettingsModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
-            >
-              <X size={20} />
-            </button>
-
-            <h3 className="font-bold text-base text-white mb-2">ตั้งค่า YouTube API Key</h3>
-            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              ใส่ Google API Key ที่คุณสร้าง เพื่อให้ระบบสามารถพิมพ์ค้นหาเพลงคาราโอเกะอะไรก็ได้แบบสดๆ
-            </p>
-
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                localStorage.setItem('yt_api_key', e.target.value);
-              }}
-              placeholder="AIzaSy..."
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs mb-4 focus:outline-none focus:border-purple-500"
-            />
-
-            <button
-              onClick={() => setShowSettingsModal(false)}
-              className="w-full py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold text-white transition"
-            >
-              บันทึกและปิด
-            </button>
           </div>
         </div>
       )}
