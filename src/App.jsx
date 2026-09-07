@@ -5,10 +5,16 @@ import {
   Mic, Disc3, QrCode, Smartphone, ListMusic, 
   PartyPopper, Sparkles, X, Check, Wifi, WifiOff, Loader2,
   ChevronUp, ChevronDown, Trash2, Volume2, VolumeX, Volume1,
-  Maximize2, Minimize2, SlidersHorizontal
+  Maximize2, Minimize2, SlidersHorizontal, Image as ImageIcon
 } from 'lucide-react';
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
+
+// ดึงรูปปกเพลงจาก YouTube Video ID อัตโนมัติ
+const getThumbnail = (ytId, customUrl) => {
+  if (customUrl) return customUrl;
+  return `https://img.youtube.com/vi/${ytId}/mqdefault.jpg`;
+};
 
 const DEFAULT_PRESETS = [
   { id: 'kJQP7kiw5Fk', ytId: 'kJQP7kiw5Fk', title: 'Luis Fonsi - Despacito (Karaoke Version)', artist: 'Sing King', isKaraoke: true },
@@ -36,7 +42,7 @@ export default function App() {
   const [roomCode, setRoomCode] = useState('');
   const [isRemoteMode, setIsRemoteMode] = useState(false);
   const [mobileTab, setMobileTab] = useState('search'); // 'search' | 'queue' | 'controls'
-  const [connectionStatus, setConnectionStatus] = useState('disconnected'); // 'connecting' | 'connected' | 'disconnected'
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [inputRoomCode, setInputRoomCode] = useState('');
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -52,7 +58,6 @@ export default function App() {
     setTimeout(() => setToastMessage(''), 2500);
   };
 
-  // ตรวจจับ URL ว่ามาจากมือถือหรือไม่ (?room=XXXX)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
@@ -71,7 +76,7 @@ export default function App() {
   }, []);
 
   // -------------------------------------------------------------
-  // 1. ระบบฝั่งทีวี (Host)
+  // 1. ฝั่งจอทีวี (Host)
   // -------------------------------------------------------------
   const initHost = () => {
     if (!window.YT) {
@@ -89,9 +94,8 @@ export default function App() {
     peer.on('connection', (conn) => {
       connRef.current = conn;
       setConnectionStatus('connected');
-      showToast('📱 รีโมทมือถือเชื่อมต่อสำเร็จแล้ว!');
+      showToast('📱 มือถือเชื่อมต่อสำเร็จแล้ว!');
 
-      // ส่งสถานะแรกเริ่มให้มือถือ
       setTimeout(() => {
         conn.send({ 
           type: 'SYNC', 
@@ -168,7 +172,7 @@ export default function App() {
                 ytPlayerRef.current.unMute();
                 setIsMuted(false);
                 conn.send({ type: 'SYNC', isMuted: false });
-                showToast('🔔 เปิดเสียงแล้ว');
+                showToast('🔔 เปิดเสียง');
               } else {
                 ytPlayerRef.current.mute();
                 setIsMuted(true);
@@ -212,7 +216,7 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // 2. ระบบฝั่งมือถือ (Remote Client)
+  // 2. ฝั่งมือถือ (Remote Client)
   // -------------------------------------------------------------
   const connectToHost = (targetCode) => {
     if (!targetCode) return;
@@ -256,7 +260,6 @@ export default function App() {
     }
   };
 
-  // ฟังก์ชันย้ายคิวเพลงขึ้น/ลง/ลบ
   const moveQueue = (index, direction) => {
     const newQueue = [...queue];
     const targetIndex = index + direction;
@@ -331,7 +334,6 @@ export default function App() {
     });
   };
 
-  // ค้นหาเพลงผ่าน YouTube Data API v3
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -359,7 +361,7 @@ export default function App() {
         ytId: item.id.videoId,
         title: item.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'"),
         artist: item.snippet.channelTitle,
-        thumbnail: item.snippet.thumbnails?.medium?.url,
+        thumbnail: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
         isKaraoke: searchMode === 'karaoke',
       }));
       setSearchResults(items);
@@ -425,7 +427,7 @@ export default function App() {
   if (isRemoteMode) {
     return (
       <div className="max-w-md mx-auto min-h-screen flex flex-col text-slate-100 bg-slate-950 pb-20 select-none">
-        {/* Header แถบสถานะการเชื่อมต่อ */}
+        {/* Header แถบสถานะ */}
         <div className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md p-3 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Smartphone className="text-purple-400" size={18} />
@@ -452,14 +454,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* Toast Alert ลอย */}
+        {/* Toast Alert */}
         {toastMessage && (
           <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-full shadow-xl">
             {toastMessage}
           </div>
         )}
 
-        {/* เนื้อหาแต่ละแท็บบนมือถือ */}
+        {/* เนื้อหาแต่ละแท็บ */}
         <div className="flex-1 p-4 overflow-y-auto">
           {/* TAB 1: ค้นหาเพลง */}
           {mobileTab === 'search' && (
@@ -498,17 +500,32 @@ export default function App() {
                 {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
               </div>
 
+              {/* รายการเพลงพร้อมรูปภาพปก */}
               <div className="space-y-2">
                 <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                   {searchResults.length > 0 ? 'ผลการค้นหา' : 'เพลงแนะนำสำหรับปาร์ตี้'}
                 </div>
                 {(searchResults.length > 0 ? searchResults : DEFAULT_PRESETS).map((song) => (
-                  <div key={song.id} className="flex items-center justify-between p-2.5 bg-slate-900 border border-slate-800 rounded-xl">
-                    <div className="truncate flex-1 pr-2">
+                  <div key={song.id} className="flex items-center gap-3 p-2 bg-slate-900 border border-slate-800 rounded-2xl">
+                    {/* ภาพปกเพลง / ศิลปิน */}
+                    <div className="relative w-16 h-12 rounded-xl overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
+                      <img 
+                        src={getThumbnail(song.ytId, song.thumbnail)} 
+                        alt={song.title} 
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                      <span className="absolute bottom-1 right-1 text-[9px] px-1 py-0.2 bg-black/70 rounded text-purple-300 font-bold">
+                        {song.isKaraoke ? '🎤' : '🎵'}
+                      </span>
+                    </div>
+
+                    <div className="truncate flex-1 min-w-0">
                       <p className="text-xs font-semibold truncate text-white">{song.title}</p>
                       <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                     </div>
-                    <div className="flex gap-1.5">
+
+                    <div className="flex gap-1 shrink-0">
                       <button onClick={() => addSong(song, true)} className="px-2.5 py-1.5 bg-pink-600/20 text-pink-300 rounded-lg text-[10px] font-bold active:scale-95">
                         แทรก
                       </button>
@@ -522,16 +539,25 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง (เลื่อนขึ้น/ลง/ลบ) */}
+          {/* TAB 2: จัดการคิวเพลง */}
           {mobileTab === 'queue' && (
             <div className="space-y-4">
-              {/* เพลงที่กำลังร้องอยู่ */}
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-900/30 to-slate-900 border border-purple-500/30">
-                <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block mb-1">
-                  กำลังร้องอยู่บนทีวี 🎤
-                </span>
-                <p className="text-sm font-bold text-white truncate">{currentSong?.title}</p>
-                <p className="text-xs text-slate-400 truncate">{currentSong?.artist}</p>
+              {/* เพลงที่กำลังร้องอยู่ พร้อมรูปปก */}
+              <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-900/30 to-slate-900 border border-purple-500/30 flex items-center gap-3">
+                <div className="w-16 h-12 rounded-xl overflow-hidden bg-black shrink-0 border border-purple-500/40">
+                  <img 
+                    src={getThumbnail(currentSong?.ytId, currentSong?.thumbnail)} 
+                    alt={currentSong?.title} 
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div className="truncate flex-1 min-w-0">
+                  <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block">
+                    กำลังร้องอยู่บนทีวี 🎤
+                  </span>
+                  <p className="text-xs font-bold text-white truncate">{currentSong?.title}</p>
+                  <p className="text-[11px] text-slate-400 truncate">{currentSong?.artist}</p>
+                </div>
               </div>
 
               <div>
@@ -549,17 +575,25 @@ export default function App() {
                 ) : (
                   <div className="space-y-2">
                     {queue.map((song, idx) => (
-                      <div key={idx} className="flex items-center justify-between p-3 bg-slate-900 border border-slate-800 rounded-2xl">
-                        <div className="flex items-center gap-2.5 truncate flex-1 pr-2">
-                          <span className="text-xs font-bold text-purple-400 w-5 text-center">{idx + 1}</span>
-                          <div className="truncate">
-                            <p className="text-xs font-semibold text-white truncate">{song.title}</p>
-                            <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
-                          </div>
+                      <div key={idx} className="flex items-center gap-2.5 p-2 bg-slate-900 border border-slate-800 rounded-2xl">
+                        <span className="text-xs font-bold text-purple-400 w-4 text-center shrink-0">{idx + 1}</span>
+                        
+                        {/* ภาพปกในคิว */}
+                        <div className="w-12 h-9 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
+                          <img 
+                            src={getThumbnail(song.ytId, song.thumbnail)} 
+                            alt="" 
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+
+                        <div className="truncate flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-white truncate">{song.title}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                         </div>
 
                         {/* ปุ่มจัดลำดับคิว */}
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                           <button
                             disabled={idx === 0}
                             onClick={() => moveQueue(idx, -1)}
@@ -592,10 +626,9 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 3: แผงควบคุม & ทีวี (จบในมือถือ) */}
+          {/* TAB 3: แผงควบคุม & ทีวี */}
           {mobileTab === 'controls' && (
             <div className="space-y-4">
-              {/* ควบคุมหน้าจอทีวี (Fullscreen) */}
               <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-between">
                 <div>
                   <h4 className="text-xs font-bold text-white">หน้าจอทีวี (Fullscreen)</h4>
@@ -614,7 +647,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* ปรับระดับเสียงทีวี */}
+              {/* ปรับเสียง */}
               <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -632,7 +665,6 @@ export default function App() {
                   </span>
                 </div>
 
-                {/* Slider */}
                 <input
                   type="range"
                   min="0"
@@ -653,7 +685,7 @@ export default function App() {
                     onClick={() => sendCommand({ type: 'TOGGLE_MUTE' })}
                     className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 ${isMuted ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300'}`}
                   >
-                    {isMuted ? 'เปิดเสียง' : 'ปิดเสียง (Mute)'}
+                    {isMuted ? 'เปิดเสียง' : 'ปิดเสียง'}
                   </button>
                   <button
                     onClick={() => sendCommand({ type: 'SET_VOLUME', volume: Math.min(100, volume + 10) })}
@@ -664,7 +696,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ควบคุมการเล่นเพลง */}
+              {/* ควบคุมเพลง */}
               <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800">
                 <span className="text-xs font-bold text-white block mb-3">ควบคุมเพลง</span>
                 <div className="grid grid-cols-3 gap-2">
@@ -694,7 +726,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* แผงซาวด์เอฟเฟกต์ */}
+              {/* ซาวด์เอฟเฟกต์ */}
               <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800">
                 <span className="text-xs font-bold text-white block mb-3">Sound Effects ปาร์ตี้</span>
                 <div className="grid grid-cols-2 gap-2">
@@ -716,7 +748,7 @@ export default function App() {
           )}
         </div>
 
-        {/* แถบนำทางด้านล่าง (Bottom Tab Bar) */}
+        {/* Tab Bar */}
         <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 flex items-center justify-around py-2 px-4 z-40">
           <button
             onClick={() => setMobileTab('search')}
@@ -759,14 +791,13 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden">
-      {/* Toast Alert ลอยบนทีวี */}
       {toastMessage && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-purple-600 text-white text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
           {toastMessage}
         </div>
       )}
 
-      {/* Header (จะซ่อนเมื่อขยายเต็มจอ) */}
+      {/* Header */}
       {!isTvFullscreen && (
         <header className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-800">
           <div className="flex items-center gap-3">
@@ -809,7 +840,6 @@ export default function App() {
           <div className="relative flex-1 flex items-center justify-center bg-black">
             <div id="karaoke-player" className="w-full h-full" />
             
-            {/* ปุ่มย่อจอลอยเวลา Fullscreen */}
             {isTvFullscreen && (
               <button
                 onClick={toggleTvFullscreen}
@@ -821,14 +851,24 @@ export default function App() {
             )}
           </div>
 
-          {/* แถบ Now Playing ด้านล่าง */}
+          {/* แถบ Now Playing ด้านล่างจอทีวี พร้อมภาพปก */}
           <div className="flex items-center justify-between p-4 bg-slate-900 border-t border-slate-800">
-            <div className="truncate flex-1 pr-4">
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
-                {currentSong?.isKaraoke ? '🎤 คาราโอเกะ' : '🎵 เพลงต้นฉบับ'}
-              </span>
-              <h2 className="text-sm font-bold text-white truncate mt-0.5">{currentSong?.title}</h2>
-              <p className="text-xs text-slate-400 truncate">{currentSong?.artist}</p>
+            <div className="flex items-center gap-3 truncate flex-1 pr-4">
+              <div className="w-14 h-10 rounded-lg overflow-hidden bg-black shrink-0 border border-purple-500/40">
+                <img 
+                  src={getThumbnail(currentSong?.ytId, currentSong?.thumbnail)} 
+                  alt="" 
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <div className="truncate">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 inline-block mb-0.5">
+                  {currentSong?.isKaraoke ? '🎤 คาราโอเกะ' : '🎵 เพลงต้นฉบับ'}
+                </span>
+                <h2 className="text-sm font-bold text-white truncate">{currentSong?.title}</h2>
+                <p className="text-xs text-slate-400 truncate">{currentSong?.artist}</p>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -853,7 +893,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ขวา: ค้นหา & คิวเพลงบนหน้าจอปกติ */}
+        {/* ขวา: ค้นหา & คิวเพลงบนทีวี พร้อมรูปปก */}
         {!isTvFullscreen && (
           <div className="w-full lg:w-96 border-l border-slate-800 bg-slate-950 flex flex-col h-72 lg:h-full">
             <div className="p-4 border-b border-slate-800">
@@ -887,6 +927,7 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {/* ผลการค้นหา */}
               {searchResults.length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
@@ -895,12 +936,17 @@ export default function App() {
                   </div>
                   <div className="space-y-1.5">
                     {searchResults.map((song) => (
-                      <div key={song.id} className="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-slate-800">
-                        <div className="truncate flex-1 pr-2">
+                      <div key={song.id} className="flex items-center gap-2 p-1.5 rounded-xl bg-slate-900 border border-slate-800">
+                        <img 
+                          src={getThumbnail(song.ytId, song.thumbnail)} 
+                          alt="" 
+                          className="w-12 h-9 rounded-lg object-cover bg-black shrink-0" 
+                        />
+                        <div className="truncate flex-1 min-w-0 pr-1">
                           <p className="text-xs font-semibold text-white truncate">{song.title}</p>
                           <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                         </div>
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 shrink-0">
                           <button onClick={() => addSong(song, true)} className="px-2 py-1 bg-pink-600/20 text-pink-300 rounded text-[10px] font-bold">แทรก</button>
                           <button onClick={() => addSong(song, false)} className="px-2 py-1 bg-purple-600 text-white rounded text-[10px] font-bold">+ คิว</button>
                         </div>
@@ -917,15 +963,18 @@ export default function App() {
               </div>
 
               {queue.map((song, idx) => (
-                <div key={idx} className="flex items-center justify-between p-2 rounded-xl bg-slate-900/70 border border-slate-800/80">
-                  <div className="flex items-center gap-2 truncate flex-1">
-                    <span className="text-xs font-bold text-slate-500 w-4 text-center">{idx + 1}</span>
-                    <div className="truncate">
-                      <p className="text-xs font-semibold text-white truncate">{song.title}</p>
-                      <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
-                    </div>
+                <div key={idx} className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-900/70 border border-slate-800/80">
+                  <span className="text-xs font-bold text-slate-500 w-3 text-center shrink-0">{idx + 1}</span>
+                  <img 
+                    src={getThumbnail(song.ytId, song.thumbnail)} 
+                    alt="" 
+                    className="w-10 h-8 rounded-lg object-cover bg-black shrink-0" 
+                  />
+                  <div className="truncate flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-white truncate">{song.title}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{song.artist}</p>
                   </div>
-                  <button onClick={() => setQueue((prev) => prev.filter((_, i) => i !== idx))} className="text-slate-500 hover:text-rose-400 p-1">
+                  <button onClick={() => setQueue((prev) => prev.filter((_, i) => i !== idx))} className="text-slate-500 hover:text-rose-400 p-1 shrink-0">
                     <X size={14} />
                   </button>
                 </div>
@@ -935,7 +984,7 @@ export default function App() {
         )}
       </div>
 
-      {/* Modal QR Code เชื่อมต่อรีโมท */}
+      {/* Modal QR Code */}
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-3xl p-6 relative">
