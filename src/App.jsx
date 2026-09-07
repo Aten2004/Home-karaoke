@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Peer from 'peerjs';
 import { 
   Play, Pause, SkipForward, RotateCcw, Search, 
@@ -11,13 +11,11 @@ import {
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
 
-// ดึงรูปปกเพลงจาก YouTube Video ID อัตโนมัติ
 const getThumbnail = (ytId, customUrl) => {
   if (customUrl) return customUrl;
   return `https://img.youtube.com/vi/${ytId}/mqdefault.jpg`;
 };
 
-// ฟังก์ชันดึง Video ID จาก URL ทุกรูปแบบของ YouTube
 const extractYtId = (url) => {
   if (!url) return null;
   const cleanUrl = url.trim();
@@ -45,7 +43,7 @@ export default function App() {
 
   // Search & URL States
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchMode, setSearchMode] = useState('karaoke'); // 'karaoke' | 'original'
+  const [searchMode, setSearchMode] = useState('karaoke');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -55,7 +53,7 @@ export default function App() {
   // Remote & WebRTC States
   const [roomCode, setRoomCode] = useState('');
   const [isRemoteMode, setIsRemoteMode] = useState(false);
-  const [mobileTab, setMobileTab] = useState('search'); // 'search' | 'queue' | 'controls'
+  const [mobileTab, setMobileTab] = useState('search');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [inputRoomCode, setInputRoomCode] = useState('');
   const [showRemoteModal, setShowRemoteModal] = useState(false);
@@ -66,19 +64,26 @@ export default function App() {
   const ytPlayerRef = useRef(null);
   const queueRef = useRef(queue);
   queueRef.current = queue;
+  const currentSongRef = useRef(currentSong);
+  currentSongRef.current = currentSong;
+  const activeRoomCodeRef = useRef('');
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
   };
 
+  // ตรวจสอบห้องและโหมดเมื่อเปิดหน้าเว็บ
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
+    
     if (roomParam) {
-      setIsRemoteMode(true);
       const code = roomParam.trim().toUpperCase();
+      setIsRemoteMode(true);
       setInputRoomCode(code);
+      activeRoomCodeRef.current = code;
+      localStorage.setItem('karaoke_saved_room', code);
       connectToHost(code);
     } else {
       initHost();
@@ -105,16 +110,20 @@ export default function App() {
     const peer = new Peer(`KARAOKE-${code}`);
     peerRef.current = peer;
 
+    peer.on('disconnected', () => {
+      if (peer && !peer.destroyed) peer.reconnect();
+    });
+
     peer.on('connection', (conn) => {
       connRef.current = conn;
       setConnectionStatus('connected');
-      showToast('📱 มือถือเชื่อมต่อสำเร็จแล้ว!');
+      showToast('📱 รีโมทมือถือเชื่อมต่อสำเร็จแล้ว!');
 
       setTimeout(() => {
         conn.send({ 
           type: 'SYNC', 
           queue: queueRef.current, 
-          currentSong,
+          currentSong: currentSongRef.current,
           volume,
           isMuted,
           isTvFullscreen
@@ -186,7 +195,6 @@ export default function App() {
           case 'TOGGLE_MUTE':
             if (ytPlayerRef.current) {
               if (isMuted) {
-                // แก้ Bug: ปลด Mute พร้อมตั้ง Volume คืนให้ทันที
                 const targetVol = volume > 0 ? volume : 80;
                 ytPlayerRef.current.unMute();
                 ytPlayerRef.current.setVolume(targetVol);
@@ -237,13 +245,19 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // 2. ฝั่งมือถือ (Remote Client)
+  // 2. ฝั่งมือถือ (Remote Client) พร้อม Auto-Reconnect
   // -------------------------------------------------------------
-  const connectToHost = (targetCode) => {
+  const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
+    activeRoomCodeRef.current = targetCode;
     setConnectionStatus('connecting');
 
-    if (peerRef.current) peerRef.current.destroy();
+    if (connRef.current) {
+      try { connRef.current.close(); } catch (_) {}
+    }
+    if (peerRef.current) {
+      try { peerRef.current.destroy(); } catch (_) {}
+    }
 
     const peer = new Peer();
     peerRef.current = peer;
@@ -272,12 +286,44 @@ export default function App() {
       conn.on('error', () => setConnectionStatus('disconnected'));
     });
 
-    peer.on('error', () => setConnectionStatus('disconnected'));
-  };
+    peer.on('disconnected', () => {
+      if (peer && !peer.destroyed) peer.reconnect();
+    });
+
+    peer.on('error', () => {
+      setConnectionStatus('disconnected');
+    });
+  }, []);
+
+  // ดักจับเมื่อผู้ใช้สลับกลับมาจากแอปอื่น (เช่น กลับมาจาก YouTube) เพื่อต่อให้อัตโนมัติ
+  useEffect(() => {
+    if (!isRemoteMode) return;
+
+    const handleReturnToTab = () => {
+      if (document.visibilityState === 'visible') {
+        const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
+        if (target && (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')) {
+          connectToHost(target);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleReturnToTab);
+    window.addEventListener('focus', handleReturnToTab);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleReturnToTab);
+      window.removeEventListener('focus', handleReturnToTab);
+    };
+  }, [isRemoteMode, connectionStatus, connectToHost]);
 
   const sendCommand = (payload) => {
     if (connRef.current && connectionStatus === 'connected') {
       connRef.current.send(payload);
+    } else {
+      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่ กรุณารอสักครู่...');
+      const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
+      if (target) connectToHost(target);
     }
   };
 
@@ -326,7 +372,6 @@ export default function App() {
               }
             },
             onStateChange: (e) => {
-              // แก้ Bug: การันตีเสียงดังเมื่อวิดีโอเริ่มเล่น
               if (e.data === window.YT.PlayerState.PLAYING) {
                 if (!isMuted && e.target.unMute) {
                   e.target.unMute();
@@ -376,7 +421,6 @@ export default function App() {
     });
   };
 
-  // ค้นหาเพลงผ่าน YouTube Data API v3
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -415,7 +459,6 @@ export default function App() {
     }
   };
 
-  // จัดการใส่ URL YouTube โดยตรง (ไม่เสียโควต้า API)
   const handleAddDirectUrl = (playNext = false) => {
     const videoId = extractYtId(directUrl);
     if (!videoId) {
@@ -511,8 +554,8 @@ export default function App() {
               </span>
             ) : (
               <button
-                onClick={() => connectToHost(inputRoomCode)}
-                className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-rose-500/20 text-rose-300 rounded-full font-bold active:scale-95"
+                onClick={() => connectToHost(inputRoomCode || localStorage.getItem('karaoke_saved_room'))}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-rose-500/20 text-rose-300 rounded-full font-bold active:scale-95 animate-pulse"
               >
                 <WifiOff size={12} /> หลุด (กดต่อใหม่)
               </button>
@@ -564,7 +607,7 @@ export default function App() {
                   </button>
                 </form>
 
-                {/* ปุ่มเปิดช่องวางลิงก์ YouTube โดยตรง */}
+                {/* ช่องใส่ลิงก์ YouTube โดยตรง */}
                 <div className="mt-2 pt-2 border-t border-slate-800/80">
                   <button
                     type="button"
@@ -581,7 +624,7 @@ export default function App() {
                         type="text"
                         value={directUrl}
                         onChange={(e) => setDirectUrl(e.target.value)}
-                        placeholder="วางลิงก์ YouTube (เช่น https://youtu.be/...)"
+                        placeholder="วางลิงก์ YouTube ที่นี่..."
                         className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-500"
                       />
                       <div className="flex justify-end gap-2">
@@ -607,7 +650,7 @@ export default function App() {
                 {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
               </div>
 
-              {/* รายการเพลงพร้อมรูปภาพปก */}
+              {/* ผลการค้นหา */}
               <div className="space-y-2">
                 <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                   {searchResults.length > 0 ? 'ผลการค้นหา' : 'เพลงแนะนำสำหรับปาร์ตี้'}
@@ -1029,7 +1072,7 @@ export default function App() {
                 </button>
               </form>
 
-              {/* ปุ่มเปิดช่องใส่ลิงก์ URL บนทีวี */}
+              {/* ช่องใส่ลิงก์ URL บนทีวี */}
               <div className="mt-2 pt-2 border-t border-slate-800/80">
                 <button
                   type="button"
