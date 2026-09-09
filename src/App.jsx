@@ -91,20 +91,17 @@ export default function App() {
     };
   }, []);
 
-  // ส่งคำสั่งผ่าน WebRTC ตรวจสอบสถานะจาก connection จริง ป้องกันบั๊กตัดการเชื่อมต่อ
-  const sendCommand = useCallback((payload) => {
-    if (connRef.current && (connRef.current.open || connectionStatusRef.current === 'connected')) {
-      try {
-        connRef.current.send(payload);
-      } catch (err) {
-        console.error('Send error:', err);
-      }
+  const sendCommand = (payload) => {
+    if (connRef.current && connRef.current.open) {
+      connRef.current.send(payload);
     } else {
-      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่...');
+      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่ กรุณารอสักครู่...');
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-      if (target) connectToHost(target);
+      if (target && connectionStatus === 'disconnected') {
+        connectToHost(target);
+      }
     }
-  }, []);
+  };
 
   // -------------------------------------------------------------
   // ระบบจัดลำดับคิว (สลับเฉพาะใน UI ก่อน แล้วส่งไปทีวีเมื่อปล่อยมือ)
@@ -174,13 +171,21 @@ export default function App() {
     setDraggedIndex(null);
   };
 
-  const removeQueueItem = (index) => {
-    const updated = queueRef.current.filter((_, i) => i !== index);
-    setQueue(updated);
-    queueRef.current = updated;
-    if (viewMode === 'remote') {
-      sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
-    }
+  const moveQueue = (index, direction) => {
+    setQueue((prevQueue) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prevQueue.length) return prevQueue;
+
+      const newQueue = [...prevQueue];
+      const temp = newQueue[index];
+      newQueue[index] = newQueue[targetIndex];
+      newQueue[targetIndex] = temp;
+
+      // อัปเดต ref และส่งลำดับใหม่ไปทีวีทันที
+      queueRef.current = newQueue;
+      sendCommand({ type: 'UPDATE_QUEUE', queue: newQueue });
+      return newQueue;
+    });
   };
 
   // -------------------------------------------------------------
@@ -257,9 +262,8 @@ export default function App() {
             }
             break;
           case 'UPDATE_QUEUE':
-            // ทีวีบันทึกคิวใหม่ทันที
             setQueue(data.queue);
-            queueRef.current = data.queue;
+            queueRef.current = data.queue; // บังคับให้ทีวีจำคิวใหม่ทันที
             conn.send({ type: 'SYNC', queue: data.queue });
             break;
           case 'SKIP':
@@ -496,24 +500,20 @@ export default function App() {
   // ดึงเพลงบนสุดของคิว (index 0) มาเล่นเสมอ
   const handleNextSong = () => {
     setQueue((prev) => {
-      if (prev.length > 0) {
-        const nextSong = prev[0];
-        const remaining = prev.slice(1);
-        
-        setCurrentSong(nextSong);
-        currentSongRef.current = nextSong;
+      const currentList = queueRef.current.length > 0 ? queueRef.current : prev;
+      if (currentList.length > 0) {
+        const next = currentList[0];
+        const remaining = currentList.slice(1);
+        setCurrentSong(next);
+        currentSongRef.current = next;
         queueRef.current = remaining;
 
         if (connRef.current && connRef.current.open) {
-          connRef.current.send({ 
-            type: 'SYNC', 
-            queue: remaining, 
-            currentSong: nextSong 
-          });
+          connRef.current.send({ type: 'SYNC', queue: remaining, currentSong: next });
         }
-        showToast(`▶ กำลังเล่น: ${nextSong.title}`);
         return remaining;
       } else {
+        // เติมส่วนนี้: เมื่อคิวหมด ให้เคลียร์จอทีวีกลับไปหน้า Standby รอเพลงใหม่
         setCurrentSong(null);
         currentSongRef.current = null;
         queueRef.current = [];
