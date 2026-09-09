@@ -4,7 +4,8 @@ import {
   Play, Pause, SkipForward, RotateCcw, Search, 
   QrCode, Smartphone, ListMusic, X, Check, Wifi, WifiOff, Loader2,
   Trash2, Volume2, VolumeX, Volume1, Maximize2, Minimize2, 
-  SlidersHorizontal, Link as LinkIcon, Tv, GripVertical, ArrowLeft
+  SlidersHorizontal, Link as LinkIcon, Tv, GripVertical, ArrowLeft,
+  ChevronUp, ChevronDown
 } from 'lucide-react';
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
@@ -93,7 +94,11 @@ export default function App() {
 
   const sendCommand = (payload) => {
     if (connRef.current && connRef.current.open) {
-      connRef.current.send(payload);
+      try {
+        connRef.current.send(payload);
+      } catch (e) {
+        console.error(e);
+      }
     } else {
       showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่ กรุณารอสักครู่...');
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
@@ -104,7 +109,7 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // ระบบจัดลำดับคิว (สลับเฉพาะใน UI ก่อน แล้วส่งไปทีวีเมื่อปล่อยมือ)
+  // ระบบจัดการคิวเพลง (ย้ายตำแหน่ง & ลบเพลง)
   // -------------------------------------------------------------
   const swapQueueLocally = (fromIdx, toIdx) => {
     if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0) return;
@@ -118,7 +123,39 @@ export default function App() {
     });
   };
 
-  // แตะค้างแล้วลากบนมือถือ (Touch Events)
+  // เลื่อนคิวด้วยปุ่มลูกศร (เหมือนเวอร์ชันแรกที่เสถียร 100%)
+  const moveQueue = (index, direction) => {
+    setQueue((prevQueue) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prevQueue.length) return prevQueue;
+
+      const newQueue = [...prevQueue];
+      const temp = newQueue[index];
+      newQueue[index] = newQueue[targetIndex];
+      newQueue[targetIndex] = temp;
+
+      queueRef.current = newQueue;
+      if (viewMode === 'remote') {
+        sendCommand({ type: 'UPDATE_QUEUE', queue: newQueue });
+      }
+      return newQueue;
+    });
+  };
+
+  // ลบเพลงออกจากคิว
+  const removeQueueItem = (index) => {
+    setQueue((prevQueue) => {
+      const updated = prevQueue.filter((_, i) => i !== index);
+      queueRef.current = updated;
+      if (viewMode === 'remote') {
+        sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+      }
+      return updated;
+    });
+    showToast('🗑️ ลบเพลงออกจากคิวแล้ว');
+  };
+
+  // แตะค้างแล้วลากบนมือถือ (คำนวณตำแหน่ง Y โดยตรง ไม่ติดบั๊ก)
   const handleTouchStart = (e, index) => {
     touchStartIndex.current = index;
     setDraggedIndex(index);
@@ -127,21 +164,22 @@ export default function App() {
   const handleTouchMove = (e) => {
     if (touchStartIndex.current === null) return;
     const touch = e.touches[0];
-    const elem = document.elementFromPoint(touch.clientX, touch.clientY);
-    const card = elem?.closest('[data-queue-idx]');
-    if (card) {
-      const targetIdx = Number(card.dataset.queueIdx);
-      if (!isNaN(targetIdx) && targetIdx !== touchStartIndex.current) {
-        swapQueueLocally(touchStartIndex.current, targetIdx);
-        touchStartIndex.current = targetIdx;
-        setDraggedIndex(targetIdx);
+    const cards = document.querySelectorAll('[data-queue-idx]');
+    cards.forEach((card) => {
+      const rect = card.getBoundingClientRect();
+      if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+        const targetIdx = Number(card.dataset.queueIdx);
+        if (!isNaN(targetIdx) && targetIdx !== touchStartIndex.current) {
+          swapQueueLocally(touchStartIndex.current, targetIdx);
+          touchStartIndex.current = targetIdx;
+          setDraggedIndex(targetIdx);
+        }
       }
-    }
+    });
   };
 
   const handleTouchEnd = () => {
     if (touchStartIndex.current !== null && viewMode === 'remote') {
-      // ส่งคิวที่จัดเสร็จแล้ว (A3 อยู่บนสุด) ไปหาทีวีรอบเดียวเมื่อปล่อยนิ้ว
       sendCommand({ type: 'UPDATE_QUEUE', queue: queueRef.current });
     }
     touchStartIndex.current = null;
@@ -153,6 +191,10 @@ export default function App() {
     dragItemIndex.current = index;
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault(); // จำเป็นสำหรับ HTML5 drag & drop
   };
 
   const handleDragEnter = (e, index) => {
@@ -169,23 +211,6 @@ export default function App() {
     }
     dragItemIndex.current = null;
     setDraggedIndex(null);
-  };
-
-  const moveQueue = (index, direction) => {
-    setQueue((prevQueue) => {
-      const targetIndex = index + direction;
-      if (targetIndex < 0 || targetIndex >= prevQueue.length) return prevQueue;
-
-      const newQueue = [...prevQueue];
-      const temp = newQueue[index];
-      newQueue[index] = newQueue[targetIndex];
-      newQueue[targetIndex] = temp;
-
-      // อัปเดต ref และส่งลำดับใหม่ไปทีวีทันที
-      queueRef.current = newQueue;
-      sendCommand({ type: 'UPDATE_QUEUE', queue: newQueue });
-      return newQueue;
-    });
   };
 
   // -------------------------------------------------------------
@@ -263,7 +288,7 @@ export default function App() {
             break;
           case 'UPDATE_QUEUE':
             setQueue(data.queue);
-            queueRef.current = data.queue; // บังคับให้ทีวีจำคิวใหม่ทันที
+            queueRef.current = data.queue;
             conn.send({ type: 'SYNC', queue: data.queue });
             break;
           case 'SKIP':
@@ -434,7 +459,7 @@ export default function App() {
   }, [viewMode, connectToHost]);
 
   // -------------------------------------------------------------
-  // เครื่องเล่นเพลง YouTube (เล่น index 0 ลำดับบนสุดเสมอ)
+  // เครื่องเล่นเพลง YouTube ฝั่งทีวี
   // -------------------------------------------------------------
   useEffect(() => {
     if (viewMode !== 'tv' || !currentSong) return;
@@ -497,7 +522,7 @@ export default function App() {
     }
   }, [currentSong, viewMode]);
 
-  // ดึงเพลงบนสุดของคิว (index 0) มาเล่นเสมอ
+  // เล่นเพลงบนสุดของคิว (index 0) เสมอ
   const handleNextSong = () => {
     setQueue((prev) => {
       const currentList = queueRef.current.length > 0 ? queueRef.current : prev;
@@ -513,7 +538,6 @@ export default function App() {
         }
         return remaining;
       } else {
-        // เติมส่วนนี้: เมื่อคิวหมด ให้เคลียร์จอทีวีกลับไปหน้า Standby รอเพลงใหม่
         setCurrentSong(null);
         currentSongRef.current = null;
         queueRef.current = [];
@@ -853,7 +877,7 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง (ระบบสัมผัสลากปล่อยสมบูรณ์แบบ) */}
+          {/* TAB 2: จัดการคิวเพลง (ลากสลับคิวได้ + มีปุ่มเลื่อนและปุ่มลบสมบูรณ์) */}
           {mobileTab === 'queue' && (
             <div className="space-y-4">
               <div className="p-3 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3">
@@ -886,7 +910,7 @@ export default function App() {
                   <span className="text-xs font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลากสลับลำดับ</span>
+                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลาก หรือกดลูกศร</span>
                 </div>
 
                 {queue.length === 0 ? (
@@ -901,19 +925,22 @@ export default function App() {
                         data-queue-idx={idx}
                         draggable
                         onDragStart={(e) => handleDragStart(e, idx)}
+                        onDragOver={handleDragOver}
                         onDragEnter={(e) => handleDragEnter(e, idx)}
                         onDragEnd={handleDragEnd}
-                        className={`flex items-center gap-2.5 p-2 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
+                        className={`flex items-center gap-2 p-2 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
                           draggedIndex === idx 
                             ? 'border-cyan-500 bg-zinc-800/90 scale-[0.98]' 
                             : 'border-zinc-800'
                         }`}
                       >
+                        {/* ด้ามจับสำหรับลาก */}
                         <div 
                           onTouchStart={(e) => handleTouchStart(e, idx)}
                           onTouchMove={handleTouchMove}
                           onTouchEnd={handleTouchEnd}
-                          className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-2 shrink-0 touch-none select-none"
+                          className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-1.5 shrink-0 touch-none select-none"
+                          title="แตะค้างแล้วลากสลับคิว"
                         >
                           <GripVertical size={18} />
                         </div>
@@ -928,18 +955,37 @@ export default function App() {
                           />
                         </div>
 
-                        <div className="truncate flex-1 min-w-0">
+                        <div className="truncate flex-1 min-w-0 pr-1">
                           <p className="text-xs font-semibold text-white truncate">{song.title}</p>
                           <p className="text-[10px] text-zinc-400 truncate">{song.artist}</p>
                         </div>
 
-                        <button
-                          onClick={() => removeQueueItem(idx)}
-                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 active:scale-90 shrink-0"
-                          title="ลบคิว"
-                        >
-                          <Trash2 size={16} />
-                        </button>
+                        {/* ปุ่มจัดลำดับคิวและปุ่มลบ (ครบถ้วน ไม่พังแน่นอน) */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            disabled={idx === 0}
+                            onClick={() => moveQueue(idx, -1)}
+                            className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                            title="เลื่อนขึ้น"
+                          >
+                            <ChevronUp size={15} />
+                          </button>
+                          <button
+                            disabled={idx === queue.length - 1}
+                            onClick={() => moveQueue(idx, 1)}
+                            className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                            title="เลื่อนลง"
+                          >
+                            <ChevronDown size={15} />
+                          </button>
+                          <button
+                            onClick={() => removeQueueItem(idx)}
+                            className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white active:scale-90 ml-0.5 transition"
+                            title="ลบคิว"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1340,18 +1386,8 @@ export default function App() {
                 queue.map((song, idx) => (
                   <div 
                     key={`${song.id}-${idx}`}
-                    data-queue-idx={idx}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, idx)}
-                    onDragEnter={(e) => handleDragEnter(e, idx)}
-                    onDragEnd={handleDragEnd}
-                    className={`flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border transition ${
-                      draggedIndex === idx ? 'border-cyan-500 opacity-60' : 'border-zinc-800'
-                    }`}
+                    className="flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border border-zinc-800"
                   >
-                    <div className="cursor-grab text-zinc-600 hover:text-cyan-400 shrink-0">
-                      <GripVertical size={14} />
-                    </div>
                     <span className="text-xs font-bold text-zinc-500 w-3 text-center shrink-0">{idx + 1}</span>
                     <img 
                       src={getThumbnail(song.ytId, song.thumbnail)} 
