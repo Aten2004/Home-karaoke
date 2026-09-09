@@ -28,7 +28,7 @@ export default function App() {
   // Navigation: 'home' | 'tv' | 'remote'
   const [viewMode, setViewMode] = useState('home');
 
-  // Player States (เริ่มต้นว่างเปล่า)
+  // Player States
   const [currentSong, setCurrentSong] = useState(null);
   const [queue, setQueue] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -53,8 +53,11 @@ export default function App() {
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
-  // Drag & Drop State สำหรับจัดลำดับคิว
+  // Drag & Drop / Touch Reorder States
   const [draggedIndex, setDraggedIndex] = useState(null);
+  const dragItemIndex = useRef(null);
+  const dragOverItemIndex = useRef(null);
+  const touchStartIndex = useRef(null);
 
   const peerRef = useRef(null);
   const connRef = useRef(null);
@@ -70,7 +73,6 @@ export default function App() {
     setTimeout(() => setToastMessage(''), 2500);
   };
 
-  // ตรวจสอบ URL เมื่อเปิดเว็บ
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
@@ -88,6 +90,85 @@ export default function App() {
       if (peerRef.current) peerRef.current.destroy();
     };
   }, []);
+
+  // -------------------------------------------------------------
+  // ฟังก์ชันจัดลำดับคิวเพลง (แก้บั๊ก A3 เลื่อนขึ้นบนสุดแล้วเล่น A1)
+  // -------------------------------------------------------------
+  const reorderQueue = useCallback((fromIndex, toIndex) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
+    
+    setQueue((prevQueue) => {
+      if (fromIndex >= prevQueue.length || toIndex >= prevQueue.length) return prevQueue;
+      const updated = [...prevQueue];
+      const [movedItem] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, movedItem);
+      
+      // อัปเดต ref และส่งไปทีวีทันทีด้วยคิวชุดใหม่ล่าสุด
+      queueRef.current = updated;
+      if (viewMode === 'remote') {
+        sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+      }
+      return updated;
+    });
+  }, [viewMode]);
+
+  // ระบบ Drag ด้วยเมาส์ (บนคอม)
+  const handleDragStart = (e, index) => {
+    dragItemIndex.current = index;
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragEnter = (e, index) => {
+    e.preventDefault();
+    dragOverItemIndex.current = index;
+  };
+
+  const handleDragEnd = () => {
+    if (dragItemIndex.current !== null && dragOverItemIndex.current !== null) {
+      reorderQueue(dragItemIndex.current, dragOverItemIndex.current);
+    }
+    dragItemIndex.current = null;
+    dragOverItemIndex.current = null;
+    setDraggedIndex(null);
+  };
+
+  // ระบบ Touch แตะค้างแล้วลาก (บนมือถือ 100%)
+  const handleTouchStart = (e, index) => {
+    touchStartIndex.current = index;
+    setDraggedIndex(index);
+  };
+
+  const handleTouchMove = (e) => {
+    if (touchStartIndex.current === null) return;
+    const touch = e.touches[0];
+    const elem = document.elementFromPoint(touch.clientX, touch.clientY);
+    const card = elem?.closest('[data-queue-idx]');
+    if (card) {
+      const targetIdx = Number(card.dataset.queueIdx);
+      if (!isNaN(targetIdx) && targetIdx !== touchStartIndex.current) {
+        reorderQueue(touchStartIndex.current, targetIdx);
+        touchStartIndex.current = targetIdx;
+        setDraggedIndex(targetIdx);
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchStartIndex.current = null;
+    setDraggedIndex(null);
+  };
+
+  const removeQueueItem = (index) => {
+    setQueue((prev) => {
+      const updated = prev.filter((_, i) => i !== index);
+      queueRef.current = updated;
+      if (viewMode === 'remote') {
+        sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+      }
+      return updated;
+    });
+  };
 
   // -------------------------------------------------------------
   // 1. ฝั่งจอทีวี (TV Host)
@@ -134,11 +215,13 @@ export default function App() {
           case 'ADD_QUEUE':
             if (!currentSongRef.current) {
               setCurrentSong(data.song);
+              currentSongRef.current = data.song;
               conn.send({ type: 'SYNC', currentSong: data.song });
               showToast(`▶ กำลังเล่น: ${data.song.title}`);
             } else {
               setQueue((prev) => {
                 const next = [...prev, data.song];
+                queueRef.current = next;
                 conn.send({ type: 'SYNC', queue: next });
                 return next;
               });
@@ -148,10 +231,12 @@ export default function App() {
           case 'PLAY_NEXT':
             if (!currentSongRef.current) {
               setCurrentSong(data.song);
+              currentSongRef.current = data.song;
               conn.send({ type: 'SYNC', currentSong: data.song });
             } else {
               setQueue((prev) => {
                 const next = [data.song, ...prev];
+                queueRef.current = next;
                 conn.send({ type: 'SYNC', queue: next });
                 return next;
               });
@@ -159,7 +244,9 @@ export default function App() {
             }
             break;
           case 'UPDATE_QUEUE':
+            // ทีวีรับคิวที่ถูกจัดลำดับใหม่ และจำใส่ ref ทันที
             setQueue(data.queue);
+            queueRef.current = data.queue;
             conn.send({ type: 'SYNC', queue: data.queue });
             break;
           case 'SKIP':
@@ -280,8 +367,14 @@ export default function App() {
 
       conn.on('data', (data) => {
         if (data.type === 'SYNC') {
-          if (data.queue !== undefined) setQueue(data.queue);
-          if (data.currentSong !== undefined) setCurrentSong(data.currentSong);
+          if (data.queue !== undefined) {
+            setQueue(data.queue);
+            queueRef.current = data.queue;
+          }
+          if (data.currentSong !== undefined) {
+            setCurrentSong(data.currentSong);
+            currentSongRef.current = data.currentSong;
+          }
           if (data.volume !== undefined) setVolume(data.volume);
           if (data.isMuted !== undefined) setIsMuted(data.isMuted);
           if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
@@ -302,7 +395,6 @@ export default function App() {
     });
   }, []);
 
-  // ดักจับการสลับแอป (Auto-Reconnect)
   useEffect(() => {
     if (viewMode !== 'remote') return;
 
@@ -334,41 +426,8 @@ export default function App() {
     }
   };
 
-  // Drag & Drop เพื่อสลับตำแหน่งคิว
-  const handleDragStart = (index) => {
-    setDraggedIndex(index);
-  };
-
-  const handleDragOver = (e, index) => {
-    e.preventDefault();
-    if (draggedIndex === null || draggedIndex === index) return;
-
-    const newQueue = [...queue];
-    const draggedItem = newQueue[draggedIndex];
-    newQueue.splice(draggedIndex, 1);
-    newQueue.splice(index, 0, draggedItem);
-
-    setDraggedIndex(index);
-    setQueue(newQueue);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedIndex(null);
-    if (viewMode === 'remote') {
-      sendCommand({ type: 'UPDATE_QUEUE', queue });
-    }
-  };
-
-  const removeQueueItem = (index) => {
-    const newQueue = queue.filter((_, i) => i !== index);
-    setQueue(newQueue);
-    if (viewMode === 'remote') {
-      sendCommand({ type: 'UPDATE_QUEUE', queue: newQueue });
-    }
-  };
-
   // -------------------------------------------------------------
-  // เครื่องเล่น YouTube ฝั่งทีวี
+  // เครื่องเล่น YouTube บนทีวี (รับประกันการเล่นเพลงบนสุดของคิว)
   // -------------------------------------------------------------
   useEffect(() => {
     if (viewMode !== 'tv' || !currentSong) return;
@@ -431,21 +490,34 @@ export default function App() {
     }
   }, [currentSong, viewMode]);
 
+  // ฟังก์ชันเล่นเพลงถัดไป (เล่นเพลง index 0 บนสุดของคิวเสมอ)
   const handleNextSong = () => {
     setQueue((prev) => {
       if (prev.length > 0) {
-        const next = prev[0];
-        const remaining = prev.slice(1);
-        setCurrentSong(next);
+        const nextSongToPlay = prev[0]; // ดึงเพลงบนสุดของคิวเสมอ
+        const remainingQueue = prev.slice(1);
+        
+        setCurrentSong(nextSongToPlay);
+        currentSongRef.current = nextSongToPlay;
+        queueRef.current = remainingQueue;
+
         if (connRef.current) {
-          connRef.current.send({ type: 'SYNC', queue: remaining, currentSong: next });
+          connRef.current.send({ 
+            type: 'SYNC', 
+            queue: remainingQueue, 
+            currentSong: nextSongToPlay 
+          });
         }
-        return remaining;
+        showToast(`▶ กำลังเล่น: ${nextSongToPlay.title}`);
+        return remainingQueue;
       } else {
         setCurrentSong(null);
+        currentSongRef.current = null;
+        queueRef.current = [];
         if (connRef.current) {
           connRef.current.send({ type: 'SYNC', queue: [], currentSong: null });
         }
+        showToast('คิวเพลงหมดแล้ว');
         return [];
       }
     });
@@ -518,12 +590,21 @@ export default function App() {
     } else {
       if (!currentSong) {
         setCurrentSong(song);
+        currentSongRef.current = song;
         showToast(`▶ กำลังเล่น: ${song.title}`);
       } else if (playNext) {
-        setQueue((prev) => [song, ...prev]);
+        setQueue((prev) => {
+          const updated = [song, ...prev];
+          queueRef.current = updated;
+          return updated;
+        });
         showToast('⚡ แทรกคิวแล้ว');
       } else {
-        setQueue((prev) => [...prev, song]);
+        setQueue((prev) => {
+          const updated = [...prev, song];
+          queueRef.current = updated;
+          return updated;
+        });
         showToast('✔ เพิ่มเพลงลงคิวแล้ว');
       }
     }
@@ -535,12 +616,10 @@ export default function App() {
   if (viewMode === 'home') {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6 select-none relative overflow-hidden">
-        {/* Background glow subtle */}
         <div className="absolute w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl -top-20 -left-20 pointer-events-none" />
         <div className="absolute w-96 h-96 bg-sky-500/10 rounded-full blur-3xl -bottom-20 -right-20 pointer-events-none" />
 
         <div className="max-w-md w-full text-center space-y-8 relative z-10">
-          {/* Logo & Brand */}
           <div className="flex flex-col items-center gap-3">
             <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-3xl shadow-2xl">
               <img src="/logo.png" alt="Karaoke Logo" className="w-16 h-16 object-contain" />
@@ -551,9 +630,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Selection Cards */}
           <div className="space-y-4">
-            {/* ตัวเลือกที่ 1: หน้าจอทีวี */}
             <button
               onClick={initHost}
               className="w-full p-5 bg-zinc-900/90 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-2xl text-left transition flex items-center gap-4 group shadow-lg active:scale-[0.99]"
@@ -571,7 +648,6 @@ export default function App() {
               </div>
             </button>
 
-            {/* ตัวเลือกที่ 2: รีโมทมือถือ */}
             <div className="p-5 bg-zinc-900/90 border border-zinc-800 rounded-2xl text-left space-y-3 shadow-lg">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
@@ -736,7 +812,7 @@ export default function App() {
                 {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
               </div>
 
-              {/* แสดงผลการค้นหา */}
+              {/* ผลการค้นหา */}
               <div className="space-y-2">
                 <div className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
                   {searchResults.length > 0 ? 'ผลการค้นหา' : 'ค้นหาเพลงที่ต้องการร้อง'}
@@ -779,7 +855,7 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง (ระบบกดค้างแล้วลาก) */}
+          {/* TAB 2: จัดการคิวเพลง (ระบบลากสลับคิวที่แก้ปัญหาแล้ว 100%) */}
           {mobileTab === 'queue' && (
             <div className="space-y-4">
               {/* เพลงที่กำลังเล่นอยู่ */}
@@ -813,7 +889,7 @@ export default function App() {
                   <span className="text-xs font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] text-zinc-500">กดค้างที่ไอคอน ⠿ เพื่อลากสลับคิว</span>
+                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลากสลับลำดับคิว</span>
                 </div>
 
                 {queue.length === 0 ? (
@@ -825,19 +901,25 @@ export default function App() {
                     {queue.map((song, idx) => (
                       <div 
                         key={`${song.id}-${idx}`}
+                        data-queue-idx={idx}
                         draggable
-                        onDragStart={() => handleDragStart(idx)}
-                        onDragOver={(e) => handleDragOver(e, idx)}
+                        onDragStart={(e) => handleDragStart(e, idx)}
+                        onDragEnter={(e) => handleDragEnter(e, idx)}
                         onDragEnd={handleDragEnd}
-                        className={`flex items-center gap-2.5 p-2 bg-zinc-900 border rounded-2xl transition ${
+                        className={`flex items-center gap-2.5 p-2 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
                           draggedIndex === idx 
-                            ? 'border-cyan-500 bg-zinc-800/80 opacity-60 scale-[0.98]' 
+                            ? 'border-cyan-500 bg-zinc-800/90 scale-[0.98]' 
                             : 'border-zinc-800'
                         }`}
                       >
-                        {/* ไอคอนกริปลาก */}
-                        <div className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-1 shrink-0 touch-none">
-                          <GripVertical size={16} />
+                        {/* ด้ามจับสำหรับลาก ทั้งเมาส์และนิ้วมือ */}
+                        <div 
+                          onTouchStart={(e) => handleTouchStart(e, idx)}
+                          onTouchMove={handleTouchMove}
+                          onTouchEnd={handleTouchEnd}
+                          className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-2 shrink-0 touch-none select-none"
+                        >
+                          <GripVertical size={18} />
                         </div>
 
                         <span className="text-xs font-bold text-cyan-400 w-3 text-center shrink-0">{idx + 1}</span>
@@ -968,7 +1050,7 @@ export default function App() {
                     className="flex flex-col items-center justify-center p-3 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
                     <SkipForward size={20} className="text-cyan-400 mb-1" />
-                    <span className="text-xs font-semibold">ข้ามเพลง</span>
+                    <span className="text-xs font-semibold">ข้ามเพลง (เล่นคิวแรก)</span>
                   </button>
                 </div>
               </div>
@@ -1037,7 +1119,7 @@ export default function App() {
             >
               <ArrowLeft size={16} />
             </button>
-            <img src="/logo.png" alt="Karaoke Logo" className="w-8 h-8 object-contain" />
+            <img src="/logo.svg" alt="Karaoke Logo" className="w-8 h-8 object-contain" />
             <div>
               <h1 className="font-bold text-sm tracking-wide text-white">K-STATION</h1>
               <p className="text-[10px] text-zinc-400">ระบบจอคาราโอเกะหลัก</p>
@@ -1071,13 +1153,11 @@ export default function App() {
 
       {/* Main Container */}
       <div className="flex flex-1 flex-col lg:flex-row overflow-hidden relative">
-        {/* ซ้าย: เครื่องเล่น YouTube หรือ หน้ารอสแตนด์บาย */}
         <div className={`flex flex-col bg-black ${isTvFullscreen ? 'w-full h-full absolute inset-0 z-50' : 'flex-1'}`}>
           <div className="relative flex-1 flex items-center justify-center bg-black">
             {currentSong ? (
               <div id="karaoke-player" className="w-full h-full" />
             ) : (
-              /* Standby Screen เมื่อยังไม่มีการเปิดเพลง */
               <div className="flex flex-col items-center justify-center p-8 text-center space-y-5 max-w-md">
                 <img src="/logo.svg" alt="Logo" className="w-24 h-24 object-contain opacity-80" />
                 <div className="space-y-1">
@@ -1275,16 +1355,22 @@ export default function App() {
                 queue.map((song, idx) => (
                   <div 
                     key={`${song.id}-${idx}`}
+                    data-queue-idx={idx}
                     draggable
-                    onDragStart={() => handleDragStart(idx)}
-                    onDragOver={(e) => handleDragOver(e, idx)}
+                    onDragStart={(e) => handleDragStart(e, idx)}
+                    onDragEnter={(e) => handleDragEnter(e, idx)}
                     onDragEnd={handleDragEnd}
-                    className={`flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border transition ${
+                    className={`flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border transition touch-manipulation ${
                       draggedIndex === idx ? 'border-cyan-500 opacity-60' : 'border-zinc-800'
                     }`}
                   >
-                    <div className="cursor-grab text-zinc-600 hover:text-cyan-400 shrink-0">
-                      <GripVertical size={14} />
+                    <div 
+                      onTouchStart={(e) => handleTouchStart(e, idx)}
+                      onTouchMove={handleTouchMove}
+                      onTouchEnd={handleTouchEnd}
+                      className="cursor-grab text-zinc-600 hover:text-cyan-400 p-1 shrink-0 touch-none select-none"
+                    >
+                      <GripVertical size={16} />
                     </div>
                     <span className="text-xs font-bold text-zinc-500 w-3 text-center shrink-0">{idx + 1}</span>
                     <img 
@@ -1307,7 +1393,7 @@ export default function App() {
         )}
       </div>
 
-      {/* Modal QR Code เชื่อมต่อรีโมท */}
+      {/* Modal QR Code */}
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 w-full max-w-sm rounded-3xl p-6 relative">
