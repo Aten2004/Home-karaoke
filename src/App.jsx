@@ -25,7 +25,6 @@ const extractYtId = (url) => {
 };
 
 export default function App() {
-  // Navigation: 'home' | 'tv' | 'remote'
   const [viewMode, setViewMode] = useState('home');
 
   // Player States
@@ -53,10 +52,9 @@ export default function App() {
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
-  // Drag & Drop / Touch Reorder States
+  // Drag & Drop / Touch Reorder
   const [draggedIndex, setDraggedIndex] = useState(null);
   const dragItemIndex = useRef(null);
-  const dragOverItemIndex = useRef(null);
   const touchStartIndex = useRef(null);
 
   const peerRef = useRef(null);
@@ -67,6 +65,8 @@ export default function App() {
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
   const activeRoomCodeRef = useRef('');
+  const connectionStatusRef = useRef(connectionStatus);
+  connectionStatusRef.current = connectionStatus;
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -91,49 +91,37 @@ export default function App() {
     };
   }, []);
 
-  // -------------------------------------------------------------
-  // ฟังก์ชันจัดลำดับคิวเพลง (แก้บั๊ก A3 เลื่อนขึ้นบนสุดแล้วเล่น A1)
-  // -------------------------------------------------------------
-  const reorderQueue = useCallback((fromIndex, toIndex) => {
-    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
-    
-    setQueue((prevQueue) => {
-      if (fromIndex >= prevQueue.length || toIndex >= prevQueue.length) return prevQueue;
-      const updated = [...prevQueue];
-      const [movedItem] = updated.splice(fromIndex, 1);
-      updated.splice(toIndex, 0, movedItem);
-      
-      // อัปเดต ref และส่งไปทีวีทันทีด้วยคิวชุดใหม่ล่าสุด
-      queueRef.current = updated;
-      if (viewMode === 'remote') {
-        sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+  // ส่งคำสั่งผ่าน WebRTC ตรวจสอบสถานะจาก connection จริง ป้องกันบั๊กตัดการเชื่อมต่อ
+  const sendCommand = useCallback((payload) => {
+    if (connRef.current && (connRef.current.open || connectionStatusRef.current === 'connected')) {
+      try {
+        connRef.current.send(payload);
+      } catch (err) {
+        console.error('Send error:', err);
       }
+    } else {
+      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่...');
+      const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
+      if (target) connectToHost(target);
+    }
+  }, []);
+
+  // -------------------------------------------------------------
+  // ระบบจัดลำดับคิว (สลับเฉพาะใน UI ก่อน แล้วส่งไปทีวีเมื่อปล่อยมือ)
+  // -------------------------------------------------------------
+  const swapQueueLocally = (fromIdx, toIdx) => {
+    if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0) return;
+    setQueue((prev) => {
+      if (fromIdx >= prev.length || toIdx >= prev.length) return prev;
+      const updated = [...prev];
+      const [moved] = updated.splice(fromIdx, 1);
+      updated.splice(toIdx, 0, moved);
+      queueRef.current = updated;
       return updated;
     });
-  }, [viewMode]);
-
-  // ระบบ Drag ด้วยเมาส์ (บนคอม)
-  const handleDragStart = (e, index) => {
-    dragItemIndex.current = index;
-    setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleDragEnter = (e, index) => {
-    e.preventDefault();
-    dragOverItemIndex.current = index;
-  };
-
-  const handleDragEnd = () => {
-    if (dragItemIndex.current !== null && dragOverItemIndex.current !== null) {
-      reorderQueue(dragItemIndex.current, dragOverItemIndex.current);
-    }
-    dragItemIndex.current = null;
-    dragOverItemIndex.current = null;
-    setDraggedIndex(null);
-  };
-
-  // ระบบ Touch แตะค้างแล้วลาก (บนมือถือ 100%)
+  // แตะค้างแล้วลากบนมือถือ (Touch Events)
   const handleTouchStart = (e, index) => {
     touchStartIndex.current = index;
     setDraggedIndex(index);
@@ -147,7 +135,7 @@ export default function App() {
     if (card) {
       const targetIdx = Number(card.dataset.queueIdx);
       if (!isNaN(targetIdx) && targetIdx !== touchStartIndex.current) {
-        reorderQueue(touchStartIndex.current, targetIdx);
+        swapQueueLocally(touchStartIndex.current, targetIdx);
         touchStartIndex.current = targetIdx;
         setDraggedIndex(targetIdx);
       }
@@ -155,23 +143,48 @@ export default function App() {
   };
 
   const handleTouchEnd = () => {
+    if (touchStartIndex.current !== null && viewMode === 'remote') {
+      // ส่งคิวที่จัดเสร็จแล้ว (A3 อยู่บนสุด) ไปหาทีวีรอบเดียวเมื่อปล่อยนิ้ว
+      sendCommand({ type: 'UPDATE_QUEUE', queue: queueRef.current });
+    }
     touchStartIndex.current = null;
     setDraggedIndex(null);
   };
 
+  // ลากด้วยเมาส์บนคอมพิวเตอร์
+  const handleDragStart = (e, index) => {
+    dragItemIndex.current = index;
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragEnter = (e, index) => {
+    e.preventDefault();
+    if (dragItemIndex.current === null || dragItemIndex.current === index) return;
+    swapQueueLocally(dragItemIndex.current, index);
+    dragItemIndex.current = index;
+    setDraggedIndex(index);
+  };
+
+  const handleDragEnd = () => {
+    if (dragItemIndex.current !== null && viewMode === 'remote') {
+      sendCommand({ type: 'UPDATE_QUEUE', queue: queueRef.current });
+    }
+    dragItemIndex.current = null;
+    setDraggedIndex(null);
+  };
+
   const removeQueueItem = (index) => {
-    setQueue((prev) => {
-      const updated = prev.filter((_, i) => i !== index);
-      queueRef.current = updated;
-      if (viewMode === 'remote') {
-        sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
-      }
-      return updated;
-    });
+    const updated = queueRef.current.filter((_, i) => i !== index);
+    setQueue(updated);
+    queueRef.current = updated;
+    if (viewMode === 'remote') {
+      sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+    }
   };
 
   // -------------------------------------------------------------
-  // 1. ฝั่งจอทีวี (TV Host)
+  // ฝั่งจอทีวี (TV Host)
   // -------------------------------------------------------------
   const initHost = () => {
     setViewMode('tv');
@@ -244,7 +257,7 @@ export default function App() {
             }
             break;
           case 'UPDATE_QUEUE':
-            // ทีวีรับคิวที่ถูกจัดลำดับใหม่ และจำใส่ ref ทันที
+            // ทีวีบันทึกคิวใหม่ทันที
             setQueue(data.queue);
             queueRef.current = data.queue;
             conn.send({ type: 'SYNC', queue: data.queue });
@@ -339,7 +352,7 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // 2. ฝั่งมือถือ (Remote Client)
+  // ฝั่งมือถือ (Remote Client)
   // -------------------------------------------------------------
   const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
@@ -401,7 +414,7 @@ export default function App() {
     const handleReturnToTab = () => {
       if (document.visibilityState === 'visible') {
         const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-        if (target && (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')) {
+        if (target && (!connRef.current || !connRef.current.open || connectionStatusRef.current !== 'connected')) {
           connectToHost(target);
         }
       }
@@ -414,20 +427,10 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleReturnToTab);
       window.removeEventListener('focus', handleReturnToTab);
     };
-  }, [viewMode, connectionStatus, connectToHost]);
-
-  const sendCommand = (payload) => {
-    if (connRef.current && connectionStatus === 'connected') {
-      connRef.current.send(payload);
-    } else {
-      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่...');
-      const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-      if (target) connectToHost(target);
-    }
-  };
+  }, [viewMode, connectToHost]);
 
   // -------------------------------------------------------------
-  // เครื่องเล่น YouTube บนทีวี (รับประกันการเล่นเพลงบนสุดของคิว)
+  // เครื่องเล่นเพลง YouTube (เล่น index 0 ลำดับบนสุดเสมอ)
   // -------------------------------------------------------------
   useEffect(() => {
     if (viewMode !== 'tv' || !currentSong) return;
@@ -490,31 +493,31 @@ export default function App() {
     }
   }, [currentSong, viewMode]);
 
-  // ฟังก์ชันเล่นเพลงถัดไป (เล่นเพลง index 0 บนสุดของคิวเสมอ)
+  // ดึงเพลงบนสุดของคิว (index 0) มาเล่นเสมอ
   const handleNextSong = () => {
     setQueue((prev) => {
       if (prev.length > 0) {
-        const nextSongToPlay = prev[0]; // ดึงเพลงบนสุดของคิวเสมอ
-        const remainingQueue = prev.slice(1);
+        const nextSong = prev[0];
+        const remaining = prev.slice(1);
         
-        setCurrentSong(nextSongToPlay);
-        currentSongRef.current = nextSongToPlay;
-        queueRef.current = remainingQueue;
+        setCurrentSong(nextSong);
+        currentSongRef.current = nextSong;
+        queueRef.current = remaining;
 
-        if (connRef.current) {
+        if (connRef.current && connRef.current.open) {
           connRef.current.send({ 
             type: 'SYNC', 
-            queue: remainingQueue, 
-            currentSong: nextSongToPlay 
+            queue: remaining, 
+            currentSong: nextSong 
           });
         }
-        showToast(`▶ กำลังเล่น: ${nextSongToPlay.title}`);
-        return remainingQueue;
+        showToast(`▶ กำลังเล่น: ${nextSong.title}`);
+        return remaining;
       } else {
         setCurrentSong(null);
         currentSongRef.current = null;
         queueRef.current = [];
-        if (connRef.current) {
+        if (connRef.current && connRef.current.open) {
           connRef.current.send({ type: 'SYNC', queue: [], currentSong: null });
         }
         showToast('คิวเพลงหมดแล้ว');
@@ -611,7 +614,7 @@ export default function App() {
   };
 
   // =============================================================
-  // 1. หน้า HOME (สำหรับเลือกโหมดใช้งาน)
+  // 1. หน้า HOME
   // =============================================================
   if (viewMode === 'home') {
     return (
@@ -693,12 +696,11 @@ export default function App() {
   }
 
   // =============================================================
-  // 2. หน้าจอมือถือ (MOBILE REMOTE VIEW)
+  // 2. หน้ารีโมทมือถือ (MOBILE REMOTE)
   // =============================================================
   if (viewMode === 'remote') {
     return (
       <div className="max-w-md mx-auto min-h-screen flex flex-col text-zinc-100 bg-zinc-950 pb-20 select-none">
-        {/* Header แถบสถานะ */}
         <div className="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur-md p-3 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
@@ -725,14 +727,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Toast Alert */}
         {toastMessage && (
           <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-xs font-bold px-4 py-2 rounded-full shadow-xl">
             {toastMessage}
           </div>
         )}
 
-        {/* เนื้อหาแต่ละแท็บบนมือถือ */}
         <div className="flex-1 p-4 overflow-y-auto">
           {/* TAB 1: ค้นหาเพลง */}
           {mobileTab === 'search' && (
@@ -769,7 +769,6 @@ export default function App() {
                   </button>
                 </form>
 
-                {/* วางลิงก์ YouTube โดยตรง */}
                 <div className="mt-2 pt-2 border-t border-zinc-800">
                   <button
                     type="button"
@@ -812,7 +811,6 @@ export default function App() {
                 {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
               </div>
 
-              {/* ผลการค้นหา */}
               <div className="space-y-2">
                 <div className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
                   {searchResults.length > 0 ? 'ผลการค้นหา' : 'ค้นหาเพลงที่ต้องการร้อง'}
@@ -855,10 +853,9 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง (ระบบลากสลับคิวที่แก้ปัญหาแล้ว 100%) */}
+          {/* TAB 2: จัดการคิวเพลง (ระบบสัมผัสลากปล่อยสมบูรณ์แบบ) */}
           {mobileTab === 'queue' && (
             <div className="space-y-4">
-              {/* เพลงที่กำลังเล่นอยู่ */}
               <div className="p-3 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3">
                 <div className="w-16 h-12 rounded-xl overflow-hidden bg-black shrink-0 border border-cyan-500/40">
                   {currentSong ? (
@@ -889,7 +886,7 @@ export default function App() {
                   <span className="text-xs font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลากสลับลำดับคิว</span>
+                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลากสลับลำดับ</span>
                 </div>
 
                 {queue.length === 0 ? (
@@ -912,7 +909,6 @@ export default function App() {
                             : 'border-zinc-800'
                         }`}
                       >
-                        {/* ด้ามจับสำหรับลาก ทั้งเมาส์และนิ้วมือ */}
                         <div 
                           onTouchStart={(e) => handleTouchStart(e, idx)}
                           onTouchMove={handleTouchMove}
@@ -955,7 +951,6 @@ export default function App() {
           {/* TAB 3: แผงควบคุม & ทีวี */}
           {mobileTab === 'controls' && (
             <div className="space-y-4">
-              {/* สลับเต็มจอทีวี */}
               <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-between">
                 <div>
                   <h4 className="text-xs font-bold text-white">หน้าจอทีวี (Fullscreen)</h4>
@@ -974,7 +969,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* ปรับเสียง */}
               <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1025,7 +1019,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ควบคุมเพลง */}
               <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800">
                 <span className="text-xs font-bold text-white block mb-3">ควบคุมเพลง</span>
                 <div className="grid grid-cols-3 gap-2">
@@ -1058,7 +1051,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Tab Bar ล่าง */}
         <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2 px-4 z-40">
           <button
             onClick={() => setMobileTab('search')}
@@ -1101,14 +1093,12 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none">
-      {/* Toast Alert ลอยบนทีวี */}
       {toastMessage && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
           {toastMessage}
         </div>
       )}
 
-      {/* Header บนทีวี */}
       {!isTvFullscreen && (
         <header className="flex items-center justify-between px-6 py-3 bg-zinc-900 border-b border-zinc-800">
           <div className="flex items-center gap-3">
@@ -1151,7 +1141,6 @@ export default function App() {
         </header>
       )}
 
-      {/* Main Container */}
       <div className="flex flex-1 flex-col lg:flex-row overflow-hidden relative">
         <div className={`flex flex-col bg-black ${isTvFullscreen ? 'w-full h-full absolute inset-0 z-50' : 'flex-1'}`}>
           <div className="relative flex-1 flex items-center justify-center bg-black">
@@ -1186,7 +1175,6 @@ export default function App() {
             )}
           </div>
 
-          {/* แถบ Now Playing ด้านล่างจอทีวี */}
           <div className="flex items-center justify-between p-3.5 bg-zinc-900 border-t border-zinc-800">
             <div className="flex items-center gap-3 truncate flex-1 pr-4">
               <div className="w-14 h-10 rounded-lg overflow-hidden bg-black shrink-0 border border-zinc-800">
@@ -1237,7 +1225,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* ขวา: ค้นหา & คิวเพลงบนทีวี */}
         {!isTvFullscreen && (
           <div className="w-full lg:w-96 border-l border-zinc-800 bg-zinc-950 flex flex-col h-72 lg:h-full">
             <div className="p-4 border-b border-zinc-800">
@@ -1268,7 +1255,6 @@ export default function App() {
                 </button>
               </form>
 
-              {/* ช่องวางลิงก์ URL บนทีวี */}
               <div className="mt-2 pt-2 border-t border-zinc-800">
                 <button
                   type="button"
@@ -1312,7 +1298,6 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {/* ผลการค้นหา */}
               {searchResults.length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
@@ -1360,17 +1345,12 @@ export default function App() {
                     onDragStart={(e) => handleDragStart(e, idx)}
                     onDragEnter={(e) => handleDragEnter(e, idx)}
                     onDragEnd={handleDragEnd}
-                    className={`flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border transition touch-manipulation ${
+                    className={`flex items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border transition ${
                       draggedIndex === idx ? 'border-cyan-500 opacity-60' : 'border-zinc-800'
                     }`}
                   >
-                    <div 
-                      onTouchStart={(e) => handleTouchStart(e, idx)}
-                      onTouchMove={handleTouchMove}
-                      onTouchEnd={handleTouchEnd}
-                      className="cursor-grab text-zinc-600 hover:text-cyan-400 p-1 shrink-0 touch-none select-none"
-                    >
-                      <GripVertical size={16} />
+                    <div className="cursor-grab text-zinc-600 hover:text-cyan-400 shrink-0">
+                      <GripVertical size={14} />
                     </div>
                     <span className="text-xs font-bold text-zinc-500 w-3 text-center shrink-0">{idx + 1}</span>
                     <img 
@@ -1393,7 +1373,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Modal QR Code */}
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 w-full max-w-sm rounded-3xl p-6 relative">
