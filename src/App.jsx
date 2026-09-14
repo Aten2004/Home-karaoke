@@ -25,16 +25,36 @@ const extractYtId = (url) => {
   return null;
 };
 
-// ตรวจหารหัสห้องทันทีตั้งแต่ก่อนโหลดหน้าเว็บ ป้องกันการเด้งกลับหน้าแรก
-const getSavedRoomCode = () => {
-  if (typeof window === 'undefined') return '';
-  const params = new URLSearchParams(window.location.search);
-  return (params.get('room') || localStorage.getItem('karaoke_saved_room') || '').trim().toUpperCase();
+// ตรวจจับและดึงรหัสห้องแบบสมบูรณ์ (ดึงจาก URL Query, Hash, และ LocalStorage)
+const getInitialSession = () => {
+  if (typeof window === 'undefined') return { mode: 'home', room: '' };
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hash = window.location.hash || '';
+    const hashMatch = hash.match(/room=([A-Za-z0-9]+)/);
+    const hashRoom = hashMatch ? hashMatch[1] : '';
+    
+    const queryRoom = params.get('room') || '';
+    const storedRoom = localStorage.getItem('karaoke_saved_room') || '';
+    const storedMode = localStorage.getItem('karaoke_view_mode') || '';
+
+    const room = (queryRoom || hashRoom || storedRoom).trim().toUpperCase();
+
+    if (room) {
+      return { mode: 'remote', room };
+    }
+    if (storedMode === 'tv') {
+      return { mode: 'tv', room: '' };
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  return { mode: 'home', room: '' };
 };
 
 export default function App() {
-  const initialRoom = getSavedRoomCode();
-  const [viewMode, setViewMode] = useState(initialRoom ? 'remote' : 'home');
+  const initialSession = getInitialSession();
+  const [viewMode, setViewMode] = useState(initialSession.mode);
 
   // Player States
   const [currentSong, setCurrentSong] = useState(null);
@@ -57,7 +77,7 @@ export default function App() {
   const [roomCode, setRoomCode] = useState('');
   const [mobileTab, setMobileTab] = useState('search');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [inputRoomCode, setInputRoomCode] = useState(initialRoom);
+  const [inputRoomCode, setInputRoomCode] = useState(initialSession.room);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
@@ -73,30 +93,50 @@ export default function App() {
   queueRef.current = queue;
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
-  const activeRoomCodeRef = useRef(initialRoom);
-  const connectionStatusRef = useRef(connectionStatus);
-  connectionStatusRef.current = connectionStatus;
+  const activeRoomCodeRef = useRef(initialSession.room);
+  const isConnectingRef = useRef(false);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
   };
 
+  // เริ่มต้นทำงานทันทีเมื่อเปิดหน้าเว็บ
   useEffect(() => {
-    const code = getSavedRoomCode();
-    if (code) {
+    const session = getInitialSession();
+    if (session.room) {
       setViewMode('remote');
-      setInputRoomCode(code);
-      activeRoomCodeRef.current = code;
-      localStorage.setItem('karaoke_saved_room', code);
-      window.history.replaceState(null, '', `${window.location.pathname}?room=${code}`);
-      connectToHost(code);
+      setInputRoomCode(session.room);
+      activeRoomCodeRef.current = session.room;
+      lockRoomSession(session.room);
+      connectToHost(session.room);
     }
-
     return () => {
-      if (peerRef.current) peerRef.current.destroy();
+      cleanupPeer();
     };
   }, []);
+
+  const cleanupPeer = () => {
+    if (connRef.current) {
+      try { connRef.current.close(); } catch (_) {}
+      connRef.current = null;
+    }
+    if (peerRef.current) {
+      try { peerRef.current.destroy(); } catch (_) {}
+      peerRef.current = null;
+    }
+  };
+
+  // ล็อกข้อมูลห้องลงทุกจุด ป้องกันเบราว์เซอร์รีเซ็ตหน้าจอ
+  const lockRoomSession = (code) => {
+    const clean = code.trim().toUpperCase();
+    activeRoomCodeRef.current = clean;
+    try {
+      localStorage.setItem('karaoke_saved_room', clean);
+      localStorage.setItem('karaoke_view_mode', 'remote');
+      window.history.replaceState(null, '', `${window.location.pathname}?room=${clean}#room=${clean}`);
+    } catch (_) {}
+  };
 
   const sendCommand = (payload) => {
     if (connRef.current && connRef.current.open) {
@@ -106,7 +146,7 @@ export default function App() {
         console.error(e);
       }
     } else {
-      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่ กรุณารอสักครู่...');
+      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่...');
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
       if (target) {
         connectToHost(target);
@@ -220,6 +260,7 @@ export default function App() {
   // -------------------------------------------------------------
   const initHost = () => {
     setViewMode('tv');
+    try { localStorage.setItem('karaoke_view_mode', 'tv'); } catch (_) {}
 
     if (!window.YT) {
       const tag = document.createElement('script');
@@ -227,14 +268,20 @@ export default function App() {
       document.body.appendChild(tag);
     }
 
-    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+    // จำรหัสห้องเดิมหากมีการรีเฟรชหน้าจอทีวี
+    let code = sessionStorage.getItem('karaoke_tv_room');
+    if (!code) {
+      code = Math.random().toString(36).substring(2, 6).toUpperCase();
+      sessionStorage.setItem('karaoke_tv_room', code);
+    }
     setRoomCode(code);
 
-    if (peerRef.current) peerRef.current.destroy();
+    cleanupPeer();
 
     const peer = new Peer(`KARAOKE-${code}`);
     peerRef.current = peer;
 
+    // เลี้ยงการเชื่อมต่อของทีวีกับเซิร์ฟเวอร์ส่งสัญญาณ
     peer.on('disconnected', () => {
       if (peer && !peer.destroyed) peer.reconnect();
     });
@@ -253,9 +300,14 @@ export default function App() {
           isMuted,
           isTvFullscreen
         });
-      }, 500);
+      }, 300);
 
       conn.on('data', (data) => {
+        if (data.type === 'PING') {
+          conn.send({ type: 'PONG' });
+          return;
+        }
+
         switch (data.type) {
           case 'ADD_QUEUE':
             if (!currentSongRef.current) {
@@ -359,7 +411,11 @@ export default function App() {
         }
       });
 
-      conn.on('close', () => setConnectionStatus('disconnected'));
+      conn.on('close', () => {
+        if (connRef.current === conn) {
+          setConnectionStatus('disconnected');
+        }
+      });
     });
   };
 
@@ -383,80 +439,118 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // ฝั่งมือถือ (Remote Client)
+  // ฝั่งมือถือ (Remote Client) พร้อมระบบ Auto-Reconnect สมบูรณ์
   // -------------------------------------------------------------
   const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
     const cleanCode = targetCode.trim().toUpperCase();
-    activeRoomCodeRef.current = cleanCode;
+    lockRoomSession(cleanCode);
     setInputRoomCode(cleanCode);
+
+    if (isConnectingRef.current) return;
+    isConnectingRef.current = true;
     setConnectionStatus('connecting');
 
-    // ล็อกรหัสห้องลงทั้ง URL และ LocalStorage
-    localStorage.setItem('karaoke_saved_room', cleanCode);
-    window.history.replaceState(null, '', `${window.location.pathname}?room=${cleanCode}`);
-
-    if (connRef.current) {
-      try { connRef.current.close(); } catch (_) {}
-    }
-    if (peerRef.current) {
-      try { peerRef.current.destroy(); } catch (_) {}
+    // ตรวจสอบตัวส่ง Peer เดิม ไม่ทำลายทิ้งหากยังใช้งานได้
+    let peer = peerRef.current;
+    if (!peer || peer.destroyed) {
+      peer = new Peer();
+      peerRef.current = peer;
     }
 
-    const peer = new Peer();
-    peerRef.current = peer;
-
-    peer.on('open', () => {
-      const conn = peer.connect(`KARAOKE-${cleanCode}`, { reliable: true });
-      connRef.current = conn;
-
-      conn.on('open', () => {
-        setConnectionStatus('connected');
-        setShowRemoteModal(false);
-      });
-
-      conn.on('data', (data) => {
-        if (data.type === 'SYNC') {
-          if (data.queue !== undefined) {
-            setQueue(data.queue);
-            queueRef.current = data.queue;
-          }
-          if (data.currentSong !== undefined) {
-            setCurrentSong(data.currentSong);
-            currentSongRef.current = data.currentSong;
-          }
-          if (data.volume !== undefined) setVolume(data.volume);
-          if (data.isMuted !== undefined) setIsMuted(data.isMuted);
-          if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
-          if (data.isTvFullscreen !== undefined) setIsTvFullscreen(data.isTvFullscreen);
+    const establishDataConnection = () => {
+      try {
+        if (connRef.current) {
+          try { connRef.current.close(); } catch (_) {}
         }
-      });
 
-      conn.on('close', () => setConnectionStatus('disconnected'));
-      conn.on('error', () => setConnectionStatus('disconnected'));
-    });
+        const conn = peer.connect(`KARAOKE-${cleanCode}`, { reliable: true });
+        connRef.current = conn;
+
+        conn.on('open', () => {
+          isConnectingRef.current = false;
+          setConnectionStatus('connected');
+          setShowRemoteModal(false);
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'PONG') return;
+
+          if (data.type === 'SYNC') {
+            if (data.queue !== undefined) {
+              setQueue(data.queue);
+              queueRef.current = data.queue;
+            }
+            if (data.currentSong !== undefined) {
+              setCurrentSong(data.currentSong);
+              currentSongRef.current = data.currentSong;
+            }
+            if (data.volume !== undefined) setVolume(data.volume);
+            if (data.isMuted !== undefined) setIsMuted(data.isMuted);
+            if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
+            if (data.isTvFullscreen !== undefined) setIsTvFullscreen(data.isTvFullscreen);
+          }
+        });
+
+        conn.on('close', () => {
+          isConnectingRef.current = false;
+          setConnectionStatus('disconnected');
+        });
+
+        conn.on('error', () => {
+          isConnectingRef.current = false;
+          setConnectionStatus('disconnected');
+        });
+      } catch (err) {
+        isConnectingRef.current = false;
+        setConnectionStatus('disconnected');
+      }
+    };
+
+    if (peer.open) {
+      establishDataConnection();
+    } else {
+      peer.on('open', () => {
+        establishDataConnection();
+      });
+    }
 
     peer.on('disconnected', () => {
       if (peer && !peer.destroyed) peer.reconnect();
     });
 
     peer.on('error', () => {
+      isConnectingRef.current = false;
       setConnectionStatus('disconnected');
     });
   }, []);
 
-  // ดักจับเมื่อสลับกลับมาจากแอปอื่น (เช่น กลับมาจาก YouTube) เพื่อต่อใหม่ทันที
+  // ระบบตรวจจับชีพจร (Heartbeat & Auto Reconnect Watchdog)
   useEffect(() => {
     if (viewMode !== 'remote') return;
+
+    const watchdogTimer = setInterval(() => {
+      const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
+      if (!target) return;
+
+      if (!connRef.current || !connRef.current.open) {
+        // หากสายหลุด ให้สั่งต่อใหม่ทันทีแบบเงียบๆ
+        connectToHost(target);
+      } else {
+        // เลี้ยงสายไว้ไม่ให้เราเตอร์หรือเบราว์เซอร์ตัดการเชื่อมต่อ
+        try {
+          connRef.current.send({ type: 'PING' });
+        } catch (_) {
+          connectToHost(target);
+        }
+      }
+    }, 3500);
 
     const handleReturnToTab = () => {
       if (document.visibilityState === 'visible') {
         const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-        if (target) {
-          const isAlive = connRef.current && connRef.current.open && peerRef.current && !peerRef.current.disconnected && !peerRef.current.destroyed;
-          if (!isAlive) {
-            connectToHost(target);
-          }
+        if (target && (!connRef.current || !connRef.current.open)) {
+          connectToHost(target);
         }
       }
     };
@@ -465,17 +559,21 @@ export default function App() {
     window.addEventListener('focus', handleReturnToTab);
 
     return () => {
+      clearInterval(watchdogTimer);
       document.removeEventListener('visibilitychange', handleReturnToTab);
       window.removeEventListener('focus', handleReturnToTab);
     };
   }, [viewMode, connectToHost]);
 
-  // ฟังก์ชันออกจากห้องกลับสู่หน้า Home จริงๆ
+  // ออกจากห้องกลับสู่หน้า Home อย่างเป็นทางการ (ล้างค่าความจำทั้งหมด)
   const exitRemoteMode = () => {
-    localStorage.removeItem('karaoke_saved_room');
-    window.history.replaceState(null, '', window.location.pathname);
-    if (connRef.current) try { connRef.current.close(); } catch (_) {}
-    if (peerRef.current) try { peerRef.current.destroy(); } catch (_) {}
+    try {
+      localStorage.removeItem('karaoke_saved_room');
+      localStorage.removeItem('karaoke_view_mode');
+      window.history.replaceState(null, '', window.location.pathname);
+      window.location.hash = '';
+    } catch (_) {}
+    cleanupPeer();
     activeRoomCodeRef.current = '';
     setInputRoomCode('');
     setViewMode('home');
@@ -743,7 +841,7 @@ export default function App() {
   }
 
   // =============================================================
-  // 2. หน้ารีโมท (ไม่เด้งกลับหน้าแรก + สลับแอปได้ไม่หลุด)
+  // 2. หน้ารีโมท (ไม่เด้งกลับหน้าแรก 100% + Auto-Reconnect)
   // =============================================================
   if (viewMode === 'remote') {
     return (
@@ -753,7 +851,7 @@ export default function App() {
           <div className="flex items-center gap-2 md:gap-3">
             <button 
               onClick={exitRemoteMode}
-              className="p-1 md:p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
+              className="p-1.5 md:p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition active:scale-95"
               title="ออกจากห้องกลับหน้าหลัก"
             >
               <ArrowLeft size={16} />
@@ -769,7 +867,7 @@ export default function App() {
               </span>
             ) : connectionStatus === 'connecting' ? (
               <span className="flex items-center gap-1.5 text-[11px] md:text-xs px-2.5 md:px-3 py-1 md:py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full font-bold">
-                <Loader2 size={13} className="animate-spin" /> กำลังต่อใหม่...
+                <Loader2 size={13} className="animate-spin" /> กำลังต่อทีวี...
               </span>
             ) : (
               <button
@@ -1164,7 +1262,7 @@ export default function App() {
   // =============================================================
   // 3. หน้าจอหลัก (TV / DESKTOP / IPAD VIEW)
   // =============================================================
-  const remoteUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+  const remoteUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}#room=${roomCode}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(remoteUrl)}`;
 
   return (
@@ -1179,7 +1277,11 @@ export default function App() {
         <header className="flex items-center justify-between px-6 py-3 bg-zinc-900 border-b border-zinc-800">
           <div className="flex items-center gap-3">
             <button 
-              onClick={() => setViewMode('home')}
+              onClick={() => {
+                sessionStorage.removeItem('karaoke_tv_room');
+                localStorage.removeItem('karaoke_view_mode');
+                setViewMode('home');
+              }}
               className="p-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition"
               title="กลับหน้าหลัก"
             >
