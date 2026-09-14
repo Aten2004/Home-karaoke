@@ -123,7 +123,6 @@ export default function App() {
     });
   };
 
-  // เลื่อนคิวด้วยปุ่มลูกศร (เหมือนเวอร์ชันแรกที่เสถียร 100%)
   const moveQueue = (index, direction) => {
     setQueue((prevQueue) => {
       const targetIndex = index + direction;
@@ -142,7 +141,6 @@ export default function App() {
     });
   };
 
-  // ลบเพลงออกจากคิว
   const removeQueueItem = (index) => {
     setQueue((prevQueue) => {
       const updated = prevQueue.filter((_, i) => i !== index);
@@ -155,7 +153,6 @@ export default function App() {
     showToast('🗑️ ลบเพลงออกจากคิวแล้ว');
   };
 
-  // แตะค้างแล้วลากบนมือถือ (คำนวณตำแหน่ง Y โดยตรง ไม่ติดบั๊ก)
   const handleTouchStart = (e, index) => {
     touchStartIndex.current = index;
     setDraggedIndex(index);
@@ -186,7 +183,6 @@ export default function App() {
     setDraggedIndex(null);
   };
 
-  // ลากด้วยเมาส์บนคอมพิวเตอร์
   const handleDragStart = (e, index) => {
     dragItemIndex.current = index;
     setDraggedIndex(index);
@@ -194,7 +190,7 @@ export default function App() {
   };
 
   const handleDragOver = (e) => {
-    e.preventDefault(); // จำเป็นสำหรับ HTML5 drag & drop
+    e.preventDefault();
   };
 
   const handleDragEnter = (e, index) => {
@@ -240,7 +236,7 @@ export default function App() {
     peer.on('connection', (conn) => {
       connRef.current = conn;
       setConnectionStatus('connected');
-      showToast('📱 รีโมทมือถือเชื่อมต่อแล้ว');
+      showToast('📱 รีโมทเชื่อมต่อแล้ว');
 
       setTimeout(() => {
         conn.send({ 
@@ -522,7 +518,6 @@ export default function App() {
     }
   }, [currentSong, viewMode]);
 
-  // เล่นเพลงบนสุดของคิว (index 0) เสมอ
   const handleNextSong = () => {
     setQueue((prev) => {
       const currentList = queueRef.current.length > 0 ? queueRef.current : prev;
@@ -638,64 +633,64 @@ export default function App() {
   };
 
   // =============================================================
-  // 1. หน้า HOME
+  // 1. หน้า HOME (ปรับขนาดให้พอดีทั้งมือถือและ iPad)
   // =============================================================
   if (viewMode === 'home') {
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6 select-none relative overflow-hidden">
-        <div className="absolute w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl -top-20 -left-20 pointer-events-none" />
-        <div className="absolute w-96 h-96 bg-sky-500/10 rounded-full blur-3xl -bottom-20 -right-20 pointer-events-none" />
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6 md:p-12 select-none relative overflow-hidden">
+        <div className="absolute w-96 md:w-[600px] h-96 md:h-[600px] bg-cyan-500/10 rounded-full blur-3xl -top-20 -left-20 pointer-events-none" />
+        <div className="absolute w-96 md:w-[600px] h-96 md:h-[600px] bg-sky-500/10 rounded-full blur-3xl -bottom-20 -right-20 pointer-events-none" />
 
-        <div className="max-w-md w-full text-center space-y-8 relative z-10">
-          <div className="flex flex-col items-center gap-3">
-            <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-3xl shadow-2xl">
-              <img src="/logo.png" alt="Karaoke Logo" className="w-16 h-16 object-contain" />
+        <div className="max-w-md md:max-w-xl w-full text-center space-y-8 md:space-y-10 relative z-10">
+          <div className="flex flex-col items-center gap-3 md:gap-4">
+            <div className="p-3 md:p-5 bg-zinc-900 border border-zinc-800 rounded-3xl shadow-2xl">
+              <img src="/logo.png" alt="Karaoke Logo" className="w-16 h-16 md:w-24 md:h-24 object-contain" />
             </div>
             <div>
-              <h1 className="text-3xl font-black tracking-tight text-white">K-STATION</h1>
-              <p className="text-xs text-zinc-400 mt-1">Smart Karaoke System</p>
+              <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">K-STATION</h1>
+              <p className="text-xs md:text-sm text-zinc-400 mt-1">Smart Karaoke System</p>
             </div>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-4 md:space-y-5">
             <button
               onClick={initHost}
-              className="w-full p-5 bg-zinc-900/90 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-2xl text-left transition flex items-center gap-4 group shadow-lg active:scale-[0.99]"
+              className="w-full p-5 md:p-6 bg-zinc-900/90 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-2xl text-left transition flex items-center gap-4 md:gap-5 group shadow-lg active:scale-[0.99]"
             >
-              <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0 group-hover:bg-cyan-500 group-hover:text-zinc-950 transition">
-                <Tv size={24} />
+              <div className="w-12 h-12 md:w-16 md:h-16 rounded-xl md:rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0 group-hover:bg-cyan-500 group-hover:text-zinc-950 transition">
+                <Tv className="w-6 h-6 md:w-8 md:h-8" />
               </div>
               <div className="flex-1">
-                <h3 className="font-bold text-sm text-white flex items-center gap-1.5">
+                <h3 className="font-bold text-sm md:text-base text-white flex items-center gap-1.5">
                   เปิดเครื่องเล่นบนจอทีวี (TV Player)
                 </h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
+                <p className="text-xs md:text-sm text-zinc-400 mt-0.5">
                   สำหรับเปิดบนจอ Smart TV หรือคอมพิวเตอร์ เพื่อแสดงวิดีโอคาราโอเกะ
                 </p>
               </div>
             </button>
 
-            <div className="p-5 bg-zinc-900/90 border border-zinc-800 rounded-2xl text-left space-y-3 shadow-lg">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
-                  <Smartphone size={24} />
+            <div className="p-5 md:p-6 bg-zinc-900/90 border border-zinc-800 rounded-2xl text-left space-y-3 md:space-y-4 shadow-lg">
+              <div className="flex items-center gap-4 md:gap-5">
+                <div className="w-12 h-12 md:w-16 md:h-16 rounded-xl md:rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                  <Smartphone className="w-6 h-6 md:w-8 md:h-8" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-white">ใช้งานเป็นรีโมท (Remote)</h3>
-                  <p className="text-xs text-zinc-400 mt-0.5">
+                  <h3 className="font-bold text-sm md:text-base text-white">ใช้งานเป็นรีโมท (Remote)</h3>
+                  <p className="text-xs md:text-sm text-zinc-400 mt-0.5">
                     สแกน QR Code จากหน้าจอทีวี หรือใส่รหัสห้อง 4 หลักด้านล่าง
                   </p>
                 </div>
               </div>
 
-              <div className="flex gap-2 pt-1">
+              <div className="flex gap-2.5 pt-1">
                 <input
                   type="text"
                   maxLength={4}
                   value={inputRoomCode}
                   onChange={(e) => setInputRoomCode(e.target.value.toUpperCase())}
                   placeholder="รหัสห้อง เช่น AB12"
-                  className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-xs text-center font-bold tracking-widest text-cyan-400 focus:outline-none focus:border-cyan-500 uppercase placeholder:text-zinc-600"
+                  className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 md:py-3.5 text-xs md:text-base text-center font-bold tracking-widest text-cyan-400 focus:outline-none focus:border-cyan-500 uppercase placeholder:text-zinc-600"
                 />
                 <button
                   disabled={!inputRoomCode.trim()}
@@ -703,7 +698,7 @@ export default function App() {
                     setViewMode('remote');
                     connectToHost(inputRoomCode.trim());
                   }}
-                  className="px-5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition disabled:opacity-40 disabled:hover:bg-cyan-500 active:scale-95"
+                  className="px-5 md:px-8 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs md:text-sm transition disabled:opacity-40 disabled:hover:bg-cyan-500 active:scale-95"
                 >
                   เชื่อมต่อ
                 </button>
@@ -711,7 +706,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="text-[11px] text-zinc-600">
+          <div className="text-[11px] md:text-xs text-zinc-600">
             ระบบ Serverless เชื่อมต่อแบบ Peer-to-Peer ใช้งานได้ฟรี ไม่จำกัดชั่วโมง
           </div>
         </div>
@@ -720,110 +715,111 @@ export default function App() {
   }
 
   // =============================================================
-  // 2. หน้ารีโมทมือถือ (MOBILE REMOTE)
+  // 2. หน้ารีโมท (รองรับหน้าจอ iPad / Tablet เต็มพื้นที่ สบายตา)
   // =============================================================
   if (viewMode === 'remote') {
     return (
-      <div className="max-w-md mx-auto min-h-screen flex flex-col text-zinc-100 bg-zinc-950 pb-20 select-none">
-        <div className="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur-md p-3 border-b border-zinc-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
-            <span className="font-bold text-xs text-zinc-200">K-STATION REMOTE</span>
+      <div className="max-w-md md:max-w-2xl lg:max-w-3xl mx-auto min-h-screen flex flex-col text-zinc-100 bg-zinc-950 pb-24 md:pb-28 select-none">
+        {/* Header แถบสถานะ */}
+        <div className="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur-md p-3 md:p-4 border-b border-zinc-800 flex items-center justify-between">
+          <div className="flex items-center gap-2 md:gap-3">
+            <img src="/logo.svg" alt="Logo" className="w-5 h-5 md:w-7 md:h-7 object-contain" />
+            <span className="font-bold text-xs md:text-sm text-zinc-200">K-STATION REMOTE</span>
           </div>
 
           <div className="flex items-center gap-2">
             {connectionStatus === 'connected' ? (
-              <span className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded-full font-bold">
-                <Wifi size={12} /> ห้อง: {inputRoomCode}
+              <span className="flex items-center gap-1.5 text-[11px] md:text-xs px-2.5 md:px-3 py-1 md:py-1.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded-full font-bold">
+                <Wifi size={13} /> ห้อง: {inputRoomCode}
               </span>
             ) : connectionStatus === 'connecting' ? (
-              <span className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full font-bold">
-                <Loader2 size={12} className="animate-spin" /> กำลังเชื่อมต่อ...
+              <span className="flex items-center gap-1.5 text-[11px] md:text-xs px-2.5 md:px-3 py-1 md:py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full font-bold">
+                <Loader2 size={13} className="animate-spin" /> กำลังเชื่อมต่อ...
               </span>
             ) : (
               <button
                 onClick={() => connectToHost(inputRoomCode || localStorage.getItem('karaoke_saved_room'))}
-                className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-full font-bold active:scale-95"
+                className="flex items-center gap-1.5 text-[11px] md:text-xs px-2.5 md:px-3 py-1 md:py-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-full font-bold active:scale-95"
               >
-                <WifiOff size={12} /> หลุด (กดต่อใหม่)
+                <WifiOff size={13} /> หลุด (กดต่อใหม่)
               </button>
             )}
           </div>
         </div>
 
         {toastMessage && (
-          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-xs font-bold px-4 py-2 rounded-full shadow-xl">
+          <div className="fixed top-14 md:top-16 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-xs md:text-sm font-bold px-4 md:px-6 py-2 md:py-2.5 rounded-full shadow-xl">
             {toastMessage}
           </div>
         )}
 
-        <div className="flex-1 p-4 overflow-y-auto">
+        <div className="flex-1 p-4 md:p-6 overflow-y-auto">
           {/* TAB 1: ค้นหาเพลง */}
           {mobileTab === 'search' && (
-            <div className="space-y-4">
-              <div className="p-3 bg-zinc-900 rounded-2xl border border-zinc-800">
-                <div className="flex gap-2 mb-2">
+            <div className="space-y-4 md:space-y-6">
+              <div className="p-3 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800">
+                <div className="flex gap-2 mb-2 md:mb-3">
                   <button
                     onClick={() => setSearchMode('karaoke')}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition ${searchMode === 'karaoke' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
+                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition ${searchMode === 'karaoke' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
                   >
                     🎤 คาราโอเกะ
                   </button>
                   <button
                     onClick={() => setSearchMode('original')}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition ${searchMode === 'original' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
+                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition ${searchMode === 'original' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
                   >
                     🎵 เพลงปกติ
                   </button>
                 </div>
-                <form onSubmit={handleSearch} className="flex gap-2">
+                <form onSubmit={handleSearch} className="flex gap-2 md:gap-3">
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="ค้นหาชื่อเพลง หรือศิลปิน..."
-                    className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-cyan-500 text-white"
+                    className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3.5 md:px-4 py-2 md:py-3 text-xs md:text-sm focus:outline-none focus:border-cyan-500 text-white"
                   />
                   <button 
                     type="submit" 
                     disabled={isSearching} 
-                    className="px-4 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95"
+                    className="px-4 md:px-6 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 rounded-xl text-xs md:text-sm font-bold flex items-center gap-1.5 active:scale-95"
                   >
-                    {isSearching ? <Loader2 size={14} className="animate-spin" /> : 'ค้นหา'}
+                    {isSearching ? <Loader2 size={15} className="animate-spin" /> : 'ค้นหา'}
                   </button>
                 </form>
 
-                <div className="mt-2 pt-2 border-t border-zinc-800">
+                <div className="mt-2.5 pt-2.5 border-t border-zinc-800">
                   <button
                     type="button"
                     onClick={() => setShowUrlInput(!showUrlInput)}
-                    className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition active:scale-95"
+                    className="text-[11px] md:text-xs font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition active:scale-95"
                   >
-                    <LinkIcon size={13} />
+                    <LinkIcon size={14} />
                     <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์ YouTube (ไม่เสียโควต้า)'}</span>
                   </button>
 
                   {showUrlInput && (
-                    <div className="mt-2 p-2.5 bg-zinc-950 rounded-xl border border-cyan-500/30 space-y-2">
+                    <div className="mt-2.5 p-2.5 md:p-3.5 bg-zinc-950 rounded-xl border border-cyan-500/30 space-y-2.5">
                       <input
                         type="text"
                         value={directUrl}
                         onChange={(e) => setDirectUrl(e.target.value)}
                         placeholder="วางลิงก์ YouTube ที่นี่..."
-                        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-cyan-500 text-white"
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 md:px-3.5 py-1.5 md:py-2.5 text-xs md:text-sm focus:outline-none focus:border-cyan-500 text-white"
                       />
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
                           onClick={() => handleAddDirectUrl(true)}
-                          className="px-2.5 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] font-bold active:scale-95"
+                          className="px-3 md:px-4 py-1.5 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] md:text-xs font-bold active:scale-95"
                         >
                           แทรกคิว
                         </button>
                         <button
                           type="button"
                           onClick={() => handleAddDirectUrl(false)}
-                          className="px-2.5 py-1 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] font-bold active:scale-95"
+                          className="px-3 md:px-4 py-1.5 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95"
                         >
                           + เพิ่มในคิว
                         </button>
@@ -832,42 +828,42 @@ export default function App() {
                   )}
                 </div>
 
-                {searchError && <p className="text-[11px] text-rose-400 mt-2">{searchError}</p>}
+                {searchError && <p className="text-[11px] md:text-xs text-rose-400 mt-2">{searchError}</p>}
               </div>
 
-              <div className="space-y-2">
-                <div className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
+              <div className="space-y-2 md:space-y-3">
+                <div className="text-[11px] md:text-xs font-bold text-zinc-400 uppercase tracking-wider">
                   {searchResults.length > 0 ? 'ผลการค้นหา' : 'ค้นหาเพลงที่ต้องการร้อง'}
                 </div>
                 {searchResults.length === 0 && (
-                  <div className="text-center py-12 text-zinc-600 text-xs bg-zinc-900/30 rounded-2xl border border-zinc-800/40">
+                  <div className="text-center py-12 md:py-20 text-zinc-600 text-xs md:text-sm bg-zinc-900/30 rounded-2xl border border-zinc-800/40">
                     พิมพ์ชื่อเพลงหรือวางลิงก์ YouTube ด้านบนเพื่อเพิ่มเพลง
                   </div>
                 )}
                 {searchResults.map((song) => (
-                  <div key={song.id} className="flex items-center gap-3 p-2 bg-zinc-900 border border-zinc-800 rounded-2xl">
-                    <div className="relative w-16 h-12 rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                  <div key={song.id} className="flex items-center gap-3 md:gap-4 p-2.5 md:p-3 bg-zinc-900 border border-zinc-800 rounded-2xl">
+                    <div className="relative w-16 h-12 md:w-24 md:h-16 rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
                       <img 
                         src={getThumbnail(song.ytId, song.thumbnail)} 
                         alt={song.title} 
                         className="w-full h-full object-cover"
                         loading="lazy"
                       />
-                      <span className="absolute bottom-1 right-1 text-[9px] px-1 py-0.2 bg-black/80 rounded text-cyan-300 font-bold">
+                      <span className="absolute bottom-1 right-1 text-[9px] md:text-[11px] px-1 py-0.2 bg-black/80 rounded text-cyan-300 font-bold">
                         {song.isKaraoke ? '🎤' : '🎵'}
                       </span>
                     </div>
 
                     <div className="truncate flex-1 min-w-0">
-                      <p className="text-xs font-semibold truncate text-white">{song.title}</p>
-                      <p className="text-[10px] text-zinc-400 truncate">{song.artist}</p>
+                      <p className="text-xs md:text-sm font-semibold truncate text-white">{song.title}</p>
+                      <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
                     </div>
 
-                    <div className="flex gap-1 shrink-0">
-                      <button onClick={() => addSong(song, true)} className="px-2.5 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg text-[10px] font-bold active:scale-95">
+                    <div className="flex gap-1.5 shrink-0">
+                      <button onClick={() => addSong(song, true)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-zinc-800 text-zinc-300 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
                         แทรก
                       </button>
-                      <button onClick={() => addSong(song, false)} className="px-2.5 py-1.5 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] font-bold active:scale-95">
+                      <button onClick={() => addSong(song, false)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
                         + คิว
                       </button>
                     </div>
@@ -877,11 +873,11 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง (ลากสลับคิวได้ + มีปุ่มเลื่อนและปุ่มลบสมบูรณ์) */}
+          {/* TAB 2: จัดการคิวเพลง */}
           {mobileTab === 'queue' && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3">
-                <div className="w-16 h-12 rounded-xl overflow-hidden bg-black shrink-0 border border-cyan-500/40">
+            <div className="space-y-4 md:space-y-6">
+              <div className="p-3.5 md:p-4 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3.5 md:gap-4">
+                <div className="w-16 h-12 md:w-24 md:h-16 rounded-xl overflow-hidden bg-black shrink-0 border border-cyan-500/40">
                   {currentSong ? (
                     <img 
                       src={getThumbnail(currentSong.ytId, currentSong.thumbnail)} 
@@ -889,36 +885,36 @@ export default function App() {
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-zinc-600 text-xs">ว่าง</div>
+                    <div className="w-full h-full flex items-center justify-center text-zinc-600 text-xs md:text-sm">ว่าง</div>
                   )}
                 </div>
                 <div className="truncate flex-1 min-w-0">
-                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider block">
+                  <span className="text-[10px] md:text-xs font-bold text-cyan-400 uppercase tracking-wider block">
                     {currentSong ? 'กำลังเล่นอยู่บนทีวี 🎤' : 'ยังไม่มีเพลงกำลังเล่น'}
                   </span>
-                  <p className="text-xs font-bold text-white truncate">
+                  <p className="text-xs md:text-sm font-bold text-white truncate mt-0.5">
                     {currentSong ? currentSong.title : 'เลือกเพลงเพื่อเริ่มร้อง'}
                   </p>
-                  <p className="text-[11px] text-zinc-400 truncate">
+                  <p className="text-[11px] md:text-xs text-zinc-400 truncate">
                     {currentSong ? currentSong.artist : '-'}
                   </p>
                 </div>
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-zinc-300">
+                <div className="flex items-center justify-between mb-2 md:mb-3">
+                  <span className="text-xs md:text-sm font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] text-zinc-500">แตะค้างที่ ⠿ เพื่อลาก หรือกดลูกศร</span>
+                  <span className="text-[10px] md:text-xs text-zinc-500">แตะค้างที่ ⠿ เพื่อลาก หรือกดลูกศร</span>
                 </div>
 
                 {queue.length === 0 ? (
-                  <div className="text-center py-12 text-zinc-600 text-xs bg-zinc-900/40 rounded-2xl border border-zinc-800/50">
+                  <div className="text-center py-12 md:py-20 text-zinc-600 text-xs md:text-sm bg-zinc-900/40 rounded-2xl border border-zinc-800/50">
                     ไม่มีเพลงในคิว<br />ไปที่แท็บ "ค้นหาเพลง" เพื่อเพิ่มเพลงได้เลย
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2 md:space-y-3">
                     {queue.map((song, idx) => (
                       <div 
                         key={`${song.id}-${idx}`}
@@ -928,13 +924,12 @@ export default function App() {
                         onDragOver={handleDragOver}
                         onDragEnter={(e) => handleDragEnter(e, idx)}
                         onDragEnd={handleDragEnd}
-                        className={`flex items-center gap-2 p-2 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
+                        className={`flex items-center gap-2.5 md:gap-3.5 p-2 md:p-3 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
                           draggedIndex === idx 
                             ? 'border-cyan-500 bg-zinc-800/90 scale-[0.98]' 
                             : 'border-zinc-800'
                         }`}
                       >
-                        {/* ด้ามจับสำหรับลาก */}
                         <div 
                           onTouchStart={(e) => handleTouchStart(e, idx)}
                           onTouchMove={handleTouchMove}
@@ -942,12 +937,12 @@ export default function App() {
                           className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-1.5 shrink-0 touch-none select-none"
                           title="แตะค้างแล้วลากสลับคิว"
                         >
-                          <GripVertical size={18} />
+                          <GripVertical className="w-4 h-4 md:w-5 md:h-5" />
                         </div>
 
-                        <span className="text-xs font-bold text-cyan-400 w-3 text-center shrink-0">{idx + 1}</span>
+                        <span className="text-xs md:text-sm font-bold text-cyan-400 w-3 md:w-5 text-center shrink-0">{idx + 1}</span>
                         
-                        <div className="w-12 h-9 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                        <div className="w-12 h-9 md:w-20 md:h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
                           <img 
                             src={getThumbnail(song.ytId, song.thumbnail)} 
                             alt="" 
@@ -956,34 +951,33 @@ export default function App() {
                         </div>
 
                         <div className="truncate flex-1 min-w-0 pr-1">
-                          <p className="text-xs font-semibold text-white truncate">{song.title}</p>
-                          <p className="text-[10px] text-zinc-400 truncate">{song.artist}</p>
+                          <p className="text-xs md:text-sm font-semibold text-white truncate">{song.title}</p>
+                          <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
                         </div>
 
-                        {/* ปุ่มจัดลำดับคิวและปุ่มลบ (ครบถ้วน ไม่พังแน่นอน) */}
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
                           <button
                             disabled={idx === 0}
                             onClick={() => moveQueue(idx, -1)}
-                            className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                            className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
                             title="เลื่อนขึ้น"
                           >
-                            <ChevronUp size={15} />
+                            <ChevronUp className="w-3.5 h-3.5 md:w-4 md:h-4" />
                           </button>
                           <button
                             disabled={idx === queue.length - 1}
                             onClick={() => moveQueue(idx, 1)}
-                            className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                            className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
                             title="เลื่อนลง"
                           >
-                            <ChevronDown size={15} />
+                            <ChevronDown className="w-3.5 h-3.5 md:w-4 md:h-4" />
                           </button>
                           <button
                             onClick={() => removeQueueItem(idx)}
-                            className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white active:scale-90 ml-0.5 transition"
+                            className="p-1.5 md:p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white active:scale-90 ml-0.5 transition"
                             title="ลบคิว"
                           >
-                            <Trash2 size={15} />
+                            <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
                           </button>
                         </div>
                       </div>
@@ -996,15 +990,15 @@ export default function App() {
 
           {/* TAB 3: แผงควบคุม & ทีวี */}
           {mobileTab === 'controls' && (
-            <div className="space-y-4">
-              <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-between">
+            <div className="space-y-4 md:space-y-6">
+              <div className="p-4 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-between">
                 <div>
-                  <h4 className="text-xs font-bold text-white">หน้าจอทีวี (Fullscreen)</h4>
-                  <p className="text-[11px] text-zinc-400">ขยายวิดีโอเต็มจอทีวีแบบไร้ขอบ</p>
+                  <h4 className="text-xs md:text-sm font-bold text-white">หน้าจอทีวี (Fullscreen)</h4>
+                  <p className="text-[11px] md:text-xs text-zinc-400 mt-0.5">ขยายวิดีโอเต็มจอทีวีแบบไร้ขอบ</p>
                 </div>
                 <button
                   onClick={() => sendCommand({ type: 'TOGGLE_FULLSCREEN' })}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition active:scale-95 ${
+                  className={`flex items-center gap-1.5 px-3.5 md:px-5 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-bold transition active:scale-95 ${
                     isTvFullscreen 
                       ? 'bg-cyan-500 text-zinc-950' 
                       : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
@@ -1015,19 +1009,19 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
+              <div className="p-4 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3 md:space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     {isMuted || volume === 0 ? (
-                      <VolumeX className="text-rose-400" size={18} />
+                      <VolumeX className="text-rose-400" size={19} />
                     ) : volume < 50 ? (
-                      <Volume1 className="text-cyan-400" size={18} />
+                      <Volume1 className="text-cyan-400" size={19} />
                     ) : (
-                      <Volume2 className="text-cyan-400" size={18} />
+                      <Volume2 className="text-cyan-400" size={19} />
                     )}
-                    <span className="text-xs font-bold text-white">ระดับเสียงทีวี</span>
+                    <span className="text-xs md:text-sm font-bold text-white">ระดับเสียงทีวี</span>
                   </div>
-                  <span className="text-xs font-bold text-cyan-400">
+                  <span className="text-xs md:text-sm font-bold text-cyan-400">
                     {isMuted ? 'ปิดเสียง' : `${volume}%`}
                   </span>
                 </div>
@@ -1038,19 +1032,19 @@ export default function App() {
                   max="100"
                   value={isMuted ? 0 : volume}
                   onChange={(e) => sendCommand({ type: 'SET_VOLUME', volume: Number(e.target.value) })}
-                  className="w-full accent-cyan-500 cursor-pointer h-2 bg-zinc-950 rounded-lg"
+                  className="w-full accent-cyan-500 cursor-pointer h-2 md:h-3 bg-zinc-950 rounded-lg"
                 />
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 md:gap-3">
                   <button
                     onClick={() => sendCommand({ type: 'SET_VOLUME', volume: Math.max(0, volume - 10) })}
-                    className="flex-1 py-2 rounded-xl bg-zinc-800 text-xs font-bold active:scale-95 text-zinc-300"
+                    className="flex-1 py-2 md:py-3 rounded-xl bg-zinc-800 text-xs md:text-sm font-bold active:scale-95 text-zinc-300"
                   >
                     - ลดเสียง
                   </button>
                   <button
                     onClick={() => sendCommand({ type: 'TOGGLE_MUTE' })}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition ${
+                    className={`px-4 md:px-6 py-2 md:py-3 rounded-xl text-xs md:text-sm font-bold active:scale-95 transition ${
                       isMuted ? 'bg-rose-600 text-white' : 'bg-zinc-800 text-zinc-300'
                     }`}
                   >
@@ -1058,38 +1052,38 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => sendCommand({ type: 'SET_VOLUME', volume: Math.min(100, volume + 10) })}
-                    className="flex-1 py-2 rounded-xl bg-zinc-800 text-xs font-bold active:scale-95 text-zinc-300"
+                    className="flex-1 py-2 md:py-3 rounded-xl bg-zinc-800 text-xs md:text-sm font-bold active:scale-95 text-zinc-300"
                   >
                     + เพิ่มเสียง
                   </button>
                 </div>
               </div>
 
-              <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800">
-                <span className="text-xs font-bold text-white block mb-3">ควบคุมเพลง</span>
-                <div className="grid grid-cols-3 gap-2">
+              <div className="p-4 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800">
+                <span className="text-xs md:text-sm font-bold text-white block mb-3 md:mb-4">ควบคุมเพลง</span>
+                <div className="grid grid-cols-3 gap-2 md:gap-3">
                   <button
                     onClick={() => sendCommand({ type: 'REPLAY' })}
-                    className="flex flex-col items-center justify-center p-3 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
+                    className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
-                    <RotateCcw size={20} className="text-cyan-400 mb-1" />
-                    <span className="text-xs font-semibold">ร้องใหม่</span>
+                    <RotateCcw size={22} className="text-cyan-400 mb-1" />
+                    <span className="text-xs md:text-sm font-semibold">ร้องใหม่</span>
                   </button>
 
                   <button
                     onClick={() => sendCommand({ type: 'TOGGLE_PLAY' })}
-                    className="flex flex-col items-center justify-center p-3 rounded-xl bg-cyan-500 text-zinc-950 active:scale-95 font-bold"
+                    className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-cyan-500 text-zinc-950 active:scale-95 font-bold"
                   >
-                    {isPlaying ? <Pause size={20} className="mb-1" /> : <Play size={20} className="mb-1" />}
-                    <span className="text-xs">{isPlaying ? 'หยุด' : 'เล่นต่อ'}</span>
+                    {isPlaying ? <Pause size={22} className="mb-1" /> : <Play size={22} className="mb-1" />}
+                    <span className="text-xs md:text-sm">{isPlaying ? 'หยุด' : 'เล่นต่อ'}</span>
                   </button>
 
                   <button
                     onClick={() => sendCommand({ type: 'SKIP' })}
-                    className="flex flex-col items-center justify-center p-3 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
+                    className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
-                    <SkipForward size={20} className="text-cyan-400 mb-1" />
-                    <span className="text-xs font-semibold">ข้ามเพลง (เล่นคิวแรก)</span>
+                    <SkipForward size={22} className="text-cyan-400 mb-1" />
+                    <span className="text-xs md:text-sm font-semibold">ข้ามเพลง</span>
                   </button>
                 </div>
               </div>
@@ -1097,23 +1091,24 @@ export default function App() {
           )}
         </div>
 
-        <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2 px-4 z-40">
+        {/* Tab Bar ล่าง (ขยายเต็มสัดส่วน iPad) */}
+        <div className="fixed bottom-0 left-0 right-0 max-w-md md:max-w-2xl lg:max-w-3xl mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2.5 md:py-3.5 px-4 md:px-8 z-40">
           <button
             onClick={() => setMobileTab('search')}
             className={`flex flex-col items-center gap-1 flex-1 py-1 transition ${mobileTab === 'search' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
-            <Search size={18} />
-            <span className="text-[11px]">ค้นหาเพลง</span>
+            <Search className="w-5 h-5 md:w-6 md:h-6" />
+            <span className="text-[11px] md:text-xs">ค้นหาเพลง</span>
           </button>
 
           <button
             onClick={() => setMobileTab('queue')}
             className={`flex flex-col items-center gap-1 flex-1 py-1 relative transition ${mobileTab === 'queue' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
-            <ListMusic size={18} />
-            <span className="text-[11px]">จัดการคิว</span>
+            <ListMusic className="w-5 h-5 md:w-6 md:h-6" />
+            <span className="text-[11px] md:text-xs">จัดการคิว</span>
             {queue.length > 0 && (
-              <span className="absolute top-0 right-7 w-4 h-4 rounded-full bg-cyan-500 text-zinc-950 text-[10px] font-bold flex items-center justify-center">
+              <span className="absolute top-0 right-6 md:right-12 w-4 h-4 md:w-5 md:h-5 rounded-full bg-cyan-500 text-zinc-950 text-[10px] md:text-xs font-bold flex items-center justify-center">
                 {queue.length}
               </span>
             )}
@@ -1123,8 +1118,8 @@ export default function App() {
             onClick={() => setMobileTab('controls')}
             className={`flex flex-col items-center gap-1 flex-1 py-1 transition ${mobileTab === 'controls' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
-            <SlidersHorizontal size={18} />
-            <span className="text-[11px]">ควบคุม & ทีวี</span>
+            <SlidersHorizontal className="w-5 h-5 md:w-6 md:h-6" />
+            <span className="text-[11px] md:text-xs">ควบคุม & ทีวี</span>
           </button>
         </div>
       </div>
@@ -1132,7 +1127,7 @@ export default function App() {
   }
 
   // =============================================================
-  // 3. หน้าจอหลัก (TV / DESKTOP VIEW)
+  // 3. หน้าจอหลัก (TV / DESKTOP / IPAD VIEW)
   // =============================================================
   const remoteUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(remoteUrl)}`;
@@ -1187,7 +1182,8 @@ export default function App() {
         </header>
       )}
 
-      <div className="flex flex-1 flex-col lg:flex-row overflow-hidden relative">
+      {/* ปรับให้แสดงผลแบบแบ่งซ้าย-ขวาตั้งแต่จอ iPad (md:flex-row) */}
+      <div className="flex flex-1 flex-col md:flex-row overflow-hidden relative">
         <div className={`flex flex-col bg-black ${isTvFullscreen ? 'w-full h-full absolute inset-0 z-50' : 'flex-1'}`}>
           <div className="relative flex-1 flex items-center justify-center bg-black">
             {currentSong ? (
@@ -1271,8 +1267,9 @@ export default function App() {
           </div>
         </div>
 
+        {/* แถบข้างปรับขนาดให้เหมาะกับทั้ง iPad (md:w-80) และจอใหญ่ (lg:w-96) */}
         {!isTvFullscreen && (
-          <div className="w-full lg:w-96 border-l border-zinc-800 bg-zinc-950 flex flex-col h-72 lg:h-full">
+          <div className="w-full md:w-80 lg:w-96 border-l border-zinc-800 bg-zinc-950 flex flex-col h-72 md:h-full">
             <div className="p-4 border-b border-zinc-800">
               <div className="flex gap-2 mb-2">
                 <button
