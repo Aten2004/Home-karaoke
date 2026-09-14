@@ -25,8 +25,16 @@ const extractYtId = (url) => {
   return null;
 };
 
+// ตรวจหารหัสห้องทันทีตั้งแต่ก่อนโหลดหน้าเว็บ ป้องกันการเด้งกลับหน้าแรก
+const getSavedRoomCode = () => {
+  if (typeof window === 'undefined') return '';
+  const params = new URLSearchParams(window.location.search);
+  return (params.get('room') || localStorage.getItem('karaoke_saved_room') || '').trim().toUpperCase();
+};
+
 export default function App() {
-  const [viewMode, setViewMode] = useState('home');
+  const initialRoom = getSavedRoomCode();
+  const [viewMode, setViewMode] = useState(initialRoom ? 'remote' : 'home');
 
   // Player States
   const [currentSong, setCurrentSong] = useState(null);
@@ -49,7 +57,7 @@ export default function App() {
   const [roomCode, setRoomCode] = useState('');
   const [mobileTab, setMobileTab] = useState('search');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [inputRoomCode, setInputRoomCode] = useState('');
+  const [inputRoomCode, setInputRoomCode] = useState(initialRoom);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
@@ -65,7 +73,7 @@ export default function App() {
   queueRef.current = queue;
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
-  const activeRoomCodeRef = useRef('');
+  const activeRoomCodeRef = useRef(initialRoom);
   const connectionStatusRef = useRef(connectionStatus);
   connectionStatusRef.current = connectionStatus;
 
@@ -75,15 +83,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    
-    if (roomParam) {
-      const code = roomParam.trim().toUpperCase();
+    const code = getSavedRoomCode();
+    if (code) {
       setViewMode('remote');
       setInputRoomCode(code);
       activeRoomCodeRef.current = code;
       localStorage.setItem('karaoke_saved_room', code);
+      window.history.replaceState(null, '', `${window.location.pathname}?room=${code}`);
       connectToHost(code);
     }
 
@@ -102,7 +108,7 @@ export default function App() {
     } else {
       showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่ กรุณารอสักครู่...');
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-      if (target && connectionStatus === 'disconnected') {
+      if (target) {
         connectToHost(target);
       }
     }
@@ -381,8 +387,14 @@ export default function App() {
   // -------------------------------------------------------------
   const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
-    activeRoomCodeRef.current = targetCode;
+    const cleanCode = targetCode.trim().toUpperCase();
+    activeRoomCodeRef.current = cleanCode;
+    setInputRoomCode(cleanCode);
     setConnectionStatus('connecting');
+
+    // ล็อกรหัสห้องลงทั้ง URL และ LocalStorage
+    localStorage.setItem('karaoke_saved_room', cleanCode);
+    window.history.replaceState(null, '', `${window.location.pathname}?room=${cleanCode}`);
 
     if (connRef.current) {
       try { connRef.current.close(); } catch (_) {}
@@ -395,7 +407,7 @@ export default function App() {
     peerRef.current = peer;
 
     peer.on('open', () => {
-      const conn = peer.connect(`KARAOKE-${targetCode}`, { reliable: true });
+      const conn = peer.connect(`KARAOKE-${cleanCode}`, { reliable: true });
       connRef.current = conn;
 
       conn.on('open', () => {
@@ -433,14 +445,18 @@ export default function App() {
     });
   }, []);
 
+  // ดักจับเมื่อสลับกลับมาจากแอปอื่น (เช่น กลับมาจาก YouTube) เพื่อต่อใหม่ทันที
   useEffect(() => {
     if (viewMode !== 'remote') return;
 
     const handleReturnToTab = () => {
       if (document.visibilityState === 'visible') {
         const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-        if (target && (!connRef.current || !connRef.current.open || connectionStatusRef.current !== 'connected')) {
-          connectToHost(target);
+        if (target) {
+          const isAlive = connRef.current && connRef.current.open && peerRef.current && !peerRef.current.disconnected && !peerRef.current.destroyed;
+          if (!isAlive) {
+            connectToHost(target);
+          }
         }
       }
     };
@@ -453,6 +469,18 @@ export default function App() {
       window.removeEventListener('focus', handleReturnToTab);
     };
   }, [viewMode, connectToHost]);
+
+  // ฟังก์ชันออกจากห้องกลับสู่หน้า Home จริงๆ
+  const exitRemoteMode = () => {
+    localStorage.removeItem('karaoke_saved_room');
+    window.history.replaceState(null, '', window.location.pathname);
+    if (connRef.current) try { connRef.current.close(); } catch (_) {}
+    if (peerRef.current) try { peerRef.current.destroy(); } catch (_) {}
+    activeRoomCodeRef.current = '';
+    setInputRoomCode('');
+    setViewMode('home');
+    setConnectionStatus('disconnected');
+  };
 
   // -------------------------------------------------------------
   // เครื่องเล่นเพลง YouTube ฝั่งทีวี
@@ -633,7 +661,7 @@ export default function App() {
   };
 
   // =============================================================
-  // 1. หน้า HOME (ปรับขนาดให้พอดีทั้งมือถือและ iPad)
+  // 1. หน้า HOME
   // =============================================================
   if (viewMode === 'home') {
     return (
@@ -715,7 +743,7 @@ export default function App() {
   }
 
   // =============================================================
-  // 2. หน้ารีโมท (รองรับหน้าจอ iPad / Tablet เต็มพื้นที่ สบายตา)
+  // 2. หน้ารีโมท (ไม่เด้งกลับหน้าแรก + สลับแอปได้ไม่หลุด)
   // =============================================================
   if (viewMode === 'remote') {
     return (
@@ -723,6 +751,13 @@ export default function App() {
         {/* Header แถบสถานะ */}
         <div className="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur-md p-3 md:p-4 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2 md:gap-3">
+            <button 
+              onClick={exitRemoteMode}
+              className="p-1 md:p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
+              title="ออกจากห้องกลับหน้าหลัก"
+            >
+              <ArrowLeft size={16} />
+            </button>
             <img src="/logo.svg" alt="Logo" className="w-5 h-5 md:w-7 md:h-7 object-contain" />
             <span className="font-bold text-xs md:text-sm text-zinc-200">K-STATION REMOTE</span>
           </div>
@@ -734,7 +769,7 @@ export default function App() {
               </span>
             ) : connectionStatus === 'connecting' ? (
               <span className="flex items-center gap-1.5 text-[11px] md:text-xs px-2.5 md:px-3 py-1 md:py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full font-bold">
-                <Loader2 size={13} className="animate-spin" /> กำลังเชื่อมต่อ...
+                <Loader2 size={13} className="animate-spin" /> กำลังต่อใหม่...
               </span>
             ) : (
               <button
@@ -1083,7 +1118,7 @@ export default function App() {
                     className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
                     <SkipForward size={22} className="text-cyan-400 mb-1" />
-                    <span className="text-xs md:text-sm font-semibold">ข้ามเพลง</span>
+                    <span className="text-xs md:text-sm font-semibold">ข้ามเพลง (เล่นคิวแรก)</span>
                   </button>
                 </div>
               </div>
@@ -1091,7 +1126,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Tab Bar ล่าง (ขยายเต็มสัดส่วน iPad) */}
+        {/* Tab Bar ล่าง */}
         <div className="fixed bottom-0 left-0 right-0 max-w-md md:max-w-2xl lg:max-w-3xl mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2.5 md:py-3.5 px-4 md:px-8 z-40">
           <button
             onClick={() => setMobileTab('search')}
@@ -1182,7 +1217,6 @@ export default function App() {
         </header>
       )}
 
-      {/* ปรับให้แสดงผลแบบแบ่งซ้าย-ขวาตั้งแต่จอ iPad (md:flex-row) */}
       <div className="flex flex-1 flex-col md:flex-row overflow-hidden relative">
         <div className={`flex flex-col bg-black ${isTvFullscreen ? 'w-full h-full absolute inset-0 z-50' : 'flex-1'}`}>
           <div className="relative flex-1 flex items-center justify-center bg-black">
@@ -1267,7 +1301,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* แถบข้างปรับขนาดให้เหมาะกับทั้ง iPad (md:w-80) และจอใหญ่ (lg:w-96) */}
         {!isTvFullscreen && (
           <div className="w-full md:w-80 lg:w-96 border-l border-zinc-800 bg-zinc-950 flex flex-col h-72 md:h-full">
             <div className="p-4 border-b border-zinc-800">
