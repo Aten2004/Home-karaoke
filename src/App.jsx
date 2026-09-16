@@ -5,7 +5,7 @@ import {
   QrCode, Smartphone, ListMusic, X, Check, Wifi, WifiOff, Loader2,
   Trash2, Volume2, VolumeX, Volume1, Maximize2, Minimize2, 
   SlidersHorizontal, Link as LinkIcon, Tv, GripVertical, ArrowLeft,
-  ChevronUp, ChevronDown
+  ChevronUp, ChevronDown, Star, History, Award, Zap, Music, Mic
 } from 'lucide-react';
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
@@ -25,7 +25,7 @@ const extractYtId = (url) => {
   return null;
 };
 
-// ตรวจจับและดึงรหัสห้องแบบสมบูรณ์ (ดึงจาก URL Query, Hash, และ LocalStorage)
+// ดึง Session เดิมทันทีเพื่อป้องกันการเด้งกลับหน้าแรก
 const getInitialSession = () => {
   if (typeof window === 'undefined') return { mode: 'home', room: '' };
   try {
@@ -63,6 +63,7 @@ export default function App() {
   const [volume, setVolume] = useState(100);
   const [isMuted, setIsMuted] = useState(false);
   const [isTvFullscreen, setIsTvFullscreen] = useState(false);
+  const [scoreData, setScoreData] = useState(null); // { show: boolean, score: number, songTitle: string }
 
   // Search & URL States
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,11 +74,21 @@ export default function App() {
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [directUrl, setDirectUrl] = useState('');
 
+  // Favorites & History States (บันทึกลง LocalStorage)
+  const [favorites, setFavorites] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('karaoke_favorites') || '[]'); } catch (_) { return []; }
+  });
+  const [history, setHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('karaoke_history') || '[]'); } catch (_) { return []; }
+  });
+  const [libraryTab, setLibraryTab] = useState('favorites'); // 'favorites' | 'history'
+
   // Remote & WebRTC States
   const [roomCode, setRoomCode] = useState('');
-  const [mobileTab, setMobileTab] = useState('search');
+  const [mobileTab, setMobileTab] = useState('search'); // 'search' | 'library' | 'queue' | 'controls'
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [inputRoomCode, setInputRoomCode] = useState(initialSession.room);
+  const [connectedClientsCount, setConnectedClientsCount] = useState(0);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
@@ -88,20 +99,20 @@ export default function App() {
 
   const peerRef = useRef(null);
   const connRef = useRef(null);
+  const clientConnsRef = useRef(new Set()); // รองรับ Multi-Remote
   const ytPlayerRef = useRef(null);
   const queueRef = useRef(queue);
   queueRef.current = queue;
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
   const activeRoomCodeRef = useRef(initialSession.room);
-  const isConnectingRef = useRef(false);
+  const scoreTimerRef = useRef(null);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
   };
 
-  // เริ่มต้นทำงานทันทีเมื่อเปิดหน้าเว็บ
   useEffect(() => {
     const session = getInitialSession();
     if (session.room) {
@@ -113,10 +124,13 @@ export default function App() {
     }
     return () => {
       cleanupPeer();
+      if (scoreTimerRef.current) clearTimeout(scoreTimerRef.current);
     };
   }, []);
 
   const cleanupPeer = () => {
+    clientConnsRef.current.forEach(c => { try { c.close(); } catch (_) {} });
+    clientConnsRef.current.clear();
     if (connRef.current) {
       try { connRef.current.close(); } catch (_) {}
       connRef.current = null;
@@ -127,7 +141,6 @@ export default function App() {
     }
   };
 
-  // ล็อกข้อมูลห้องลงทุกจุด ป้องกันเบราว์เซอร์รีเซ็ตหน้าจอ
   const lockRoomSession = (code) => {
     const clean = code.trim().toUpperCase();
     activeRoomCodeRef.current = clean;
@@ -138,6 +151,19 @@ export default function App() {
     } catch (_) {}
   };
 
+  // Broadcast คำสั่งจากทีวีไปยังทุกรีโมทที่เชื่อมต่ออยู่
+  const broadcastToAllRemotes = useCallback((data) => {
+    clientConnsRef.current.forEach((conn) => {
+      if (conn && conn.open) {
+        try { conn.send(data); } catch (_) {}
+      } else {
+        clientConnsRef.current.delete(conn);
+      }
+    });
+    setConnectedClientsCount(clientConnsRef.current.size);
+  }, []);
+
+  // ส่งคำสั่งจากรีโมทไปยังทีวี
   const sendCommand = (payload) => {
     if (connRef.current && connRef.current.open) {
       try {
@@ -146,12 +172,40 @@ export default function App() {
         console.error(e);
       }
     } else {
-      showToast('⚠️ กำลังเชื่อมต่อทีวีใหม่...');
+      showToast('กำลังเชื่อมต่อทีวีใหม่...');
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
       if (target) {
         connectToHost(target);
       }
     }
+  };
+
+  // -------------------------------------------------------------
+  // ระบบ Favorite & History (คลังเพลงส่วนตัว)
+  // -------------------------------------------------------------
+  const toggleFavorite = (song) => {
+    setFavorites((prev) => {
+      const exists = prev.some((s) => s.ytId === song.ytId);
+      let updated;
+      if (exists) {
+        updated = prev.filter((s) => s.ytId !== song.ytId);
+        showToast('ลบออกจากเพลงโปรดแล้ว');
+      } else {
+        updated = [song, ...prev];
+        showToast('บันทึกลงเพลงโปรดแล้ว');
+      }
+      try { localStorage.setItem('karaoke_favorites', JSON.stringify(updated)); } catch (_) {}
+      return updated;
+    });
+  };
+
+  const recordSongToHistory = (song) => {
+    setHistory((prev) => {
+      const filtered = prev.filter((s) => s.ytId !== song.ytId);
+      const updated = [song, ...filtered].slice(0, 30); // เก็บประวัติล่าสุด 30 เพลง
+      try { localStorage.setItem('karaoke_history', JSON.stringify(updated)); } catch (_) {}
+      return updated;
+    });
   };
 
   // -------------------------------------------------------------
@@ -196,7 +250,7 @@ export default function App() {
       }
       return updated;
     });
-    showToast('🗑️ ลบเพลงออกจากคิวแล้ว');
+    showToast('ลบเพลงออกจากคิวแล้ว');
   };
 
   const handleTouchStart = (e, index) => {
@@ -256,7 +310,33 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // ฝั่งจอทีวี (TV Host)
+  // ระบบคิดคะแนนคาราโอเกะ (Party Score Generator)
+  // -------------------------------------------------------------
+  const triggerKaraokeScore = (song) => {
+    if (!song) {
+      handleNextSong();
+      return;
+    }
+    const score = Math.floor(Math.random() * 18) + 82; // สุ่มคะแนน 82 - 99
+    const payload = { show: true, score, songTitle: song.title };
+    setScoreData(payload);
+    broadcastToAllRemotes({ type: 'SHOW_SCORE', data: payload });
+
+    if (scoreTimerRef.current) clearTimeout(scoreTimerRef.current);
+    scoreTimerRef.current = setTimeout(() => {
+      dismissScoreAndNext();
+    }, 5500); // แสดงคะแนน 5.5 วินาทีแล้วเริ่มเพลงถัดไป
+  };
+
+  const dismissScoreAndNext = () => {
+    if (scoreTimerRef.current) clearTimeout(scoreTimerRef.current);
+    setScoreData(null);
+    broadcastToAllRemotes({ type: 'HIDE_SCORE' });
+    handleNextSong();
+  };
+
+  // -------------------------------------------------------------
+  // 1. ฝั่งจอทีวี (TV Host - รองรับหลายรีโมทพร้อมกัน)
   // -------------------------------------------------------------
   const initHost = () => {
     setViewMode('tv');
@@ -268,7 +348,6 @@ export default function App() {
       document.body.appendChild(tag);
     }
 
-    // จำรหัสห้องเดิมหากมีการรีเฟรชหน้าจอทีวี
     let code = sessionStorage.getItem('karaoke_tv_room');
     if (!code) {
       code = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -281,25 +360,26 @@ export default function App() {
     const peer = new Peer(`KARAOKE-${code}`);
     peerRef.current = peer;
 
-    // เลี้ยงการเชื่อมต่อของทีวีกับเซิร์ฟเวอร์ส่งสัญญาณ
     peer.on('disconnected', () => {
       if (peer && !peer.destroyed) peer.reconnect();
     });
 
     peer.on('connection', (conn) => {
-      connRef.current = conn;
-      setConnectionStatus('connected');
-      showToast('📱 รีโมทเชื่อมต่อแล้ว');
+      clientConnsRef.current.add(conn);
+      setConnectedClientsCount(clientConnsRef.current.size);
+      showToast('รีโมทใหม่เชื่อมต่อแล้ว');
 
       setTimeout(() => {
-        conn.send({ 
-          type: 'SYNC', 
-          queue: queueRef.current, 
-          currentSong: currentSongRef.current,
-          volume,
-          isMuted,
-          isTvFullscreen
-        });
+        if (conn.open) {
+          conn.send({ 
+            type: 'SYNC', 
+            queue: queueRef.current, 
+            currentSong: currentSongRef.current,
+            volume,
+            isMuted,
+            isTvFullscreen
+          });
+        }
       }, 300);
 
       conn.on('data', (data) => {
@@ -313,40 +393,43 @@ export default function App() {
             if (!currentSongRef.current) {
               setCurrentSong(data.song);
               currentSongRef.current = data.song;
-              conn.send({ type: 'SYNC', currentSong: data.song });
-              showToast(`▶ กำลังเล่น: ${data.song.title}`);
+              broadcastToAllRemotes({ type: 'SYNC', currentSong: data.song });
+              showToast(`กำลังเล่น: ${data.song.title}`);
             } else {
               setQueue((prev) => {
                 const next = [...prev, data.song];
                 queueRef.current = next;
-                conn.send({ type: 'SYNC', queue: next });
+                broadcastToAllRemotes({ type: 'SYNC', queue: next });
                 return next;
               });
-              showToast(`+ เพิ่มเพลง: ${data.song.title}`);
+              showToast(`เพิ่มเพลง: ${data.song.title}`);
             }
             break;
           case 'PLAY_NEXT':
             if (!currentSongRef.current) {
               setCurrentSong(data.song);
               currentSongRef.current = data.song;
-              conn.send({ type: 'SYNC', currentSong: data.song });
+              broadcastToAllRemotes({ type: 'SYNC', currentSong: data.song });
             } else {
               setQueue((prev) => {
                 const next = [data.song, ...prev];
                 queueRef.current = next;
-                conn.send({ type: 'SYNC', queue: next });
+                broadcastToAllRemotes({ type: 'SYNC', queue: next });
                 return next;
               });
-              showToast(`⚡ แทรกคิว: ${data.song.title}`);
+              showToast(`แทรกคิว: ${data.song.title}`);
             }
             break;
           case 'UPDATE_QUEUE':
             setQueue(data.queue);
             queueRef.current = data.queue;
-            conn.send({ type: 'SYNC', queue: data.queue });
+            broadcastToAllRemotes({ type: 'SYNC', queue: data.queue });
             break;
           case 'SKIP':
             handleNextSong();
+            break;
+          case 'FINISH_WITH_SCORE':
+            triggerKaraokeScore(currentSongRef.current);
             break;
           case 'REPLAY':
             if (ytPlayerRef.current?.seekTo) {
@@ -361,11 +444,11 @@ export default function App() {
               if (state === 1) {
                 ytPlayerRef.current.pauseVideo();
                 setIsPlaying(false);
-                conn.send({ type: 'SYNC', isPlaying: false });
+                broadcastToAllRemotes({ type: 'SYNC', isPlaying: false });
               } else {
                 ytPlayerRef.current.playVideo();
                 setIsPlaying(true);
-                conn.send({ type: 'SYNC', isPlaying: true });
+                broadcastToAllRemotes({ type: 'SYNC', isPlaying: true });
               }
             }
             break;
@@ -382,8 +465,7 @@ export default function App() {
                 setIsMuted(true);
               }
             }
-            showToast(`🔊 เสียง: ${newVol}%`);
-            conn.send({ type: 'SYNC', volume: newVol, isMuted: newVol === 0 });
+            broadcastToAllRemotes({ type: 'SYNC', volume: newVol, isMuted: newVol === 0 });
             break;
           case 'TOGGLE_MUTE':
             if (ytPlayerRef.current) {
@@ -393,13 +475,13 @@ export default function App() {
                 ytPlayerRef.current.setVolume(targetVol);
                 setVolume(targetVol);
                 setIsMuted(false);
-                conn.send({ type: 'SYNC', isMuted: false, volume: targetVol });
-                showToast(`🔔 เปิดเสียง (${targetVol}%)`);
+                broadcastToAllRemotes({ type: 'SYNC', isMuted: false, volume: targetVol });
+                showToast(`เปิดเสียง (${targetVol}%)`);
               } else {
                 ytPlayerRef.current.mute();
                 setIsMuted(true);
-                conn.send({ type: 'SYNC', isMuted: true });
-                showToast('🔇 ปิดเสียง');
+                broadcastToAllRemotes({ type: 'SYNC', isMuted: true });
+                showToast('ปิดเสียง');
               }
             }
             break;
@@ -412,9 +494,8 @@ export default function App() {
       });
 
       conn.on('close', () => {
-        if (connRef.current === conn) {
-          setConnectionStatus('disconnected');
-        }
+        clientConnsRef.current.delete(conn);
+        setConnectedClientsCount(clientConnsRef.current.size);
       });
     });
   };
@@ -431,120 +512,94 @@ export default function App() {
           document.exitFullscreen().catch(() => {});
         }
       }
-      if (connRef.current) {
-        connRef.current.send({ type: 'SYNC', isTvFullscreen: nextState });
-      }
+      broadcastToAllRemotes({ type: 'SYNC', isTvFullscreen: nextState });
       return nextState;
     });
   };
 
   // -------------------------------------------------------------
-  // ฝั่งมือถือ (Remote Client) พร้อมระบบ Auto-Reconnect สมบูรณ์
+  // 2. ฝั่งมือถือ (Remote Client - Auto Reconnect & Watchdog)
   // -------------------------------------------------------------
   const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
     const cleanCode = targetCode.trim().toUpperCase();
     lockRoomSession(cleanCode);
     setInputRoomCode(cleanCode);
-
-    if (isConnectingRef.current) return;
-    isConnectingRef.current = true;
     setConnectionStatus('connecting');
 
-    // ตรวจสอบตัวส่ง Peer เดิม ไม่ทำลายทิ้งหากยังใช้งานได้
-    let peer = peerRef.current;
-    if (!peer || peer.destroyed) {
-      peer = new Peer();
-      peerRef.current = peer;
-    }
+    cleanupPeer();
 
-    const establishDataConnection = () => {
-      try {
-        if (connRef.current) {
-          try { connRef.current.close(); } catch (_) {}
+    const peer = new Peer();
+    peerRef.current = peer;
+
+    peer.on('open', () => {
+      const conn = peer.connect(`KARAOKE-${cleanCode}`, { reliable: true });
+      connRef.current = conn;
+
+      conn.on('open', () => {
+        setConnectionStatus('connected');
+        setShowRemoteModal(false);
+      });
+
+      conn.on('data', (data) => {
+        if (data.type === 'PONG') return;
+
+        if (data.type === 'SHOW_SCORE') {
+          setScoreData(data.data);
+          return;
+        }
+        if (data.type === 'HIDE_SCORE') {
+          setScoreData(null);
+          return;
         }
 
-        const conn = peer.connect(`KARAOKE-${cleanCode}`, { reliable: true });
-        connRef.current = conn;
-
-        conn.on('open', () => {
-          isConnectingRef.current = false;
-          setConnectionStatus('connected');
-          setShowRemoteModal(false);
-        });
-
-        conn.on('data', (data) => {
-          if (data.type === 'PONG') return;
-
-          if (data.type === 'SYNC') {
-            if (data.queue !== undefined) {
-              setQueue(data.queue);
-              queueRef.current = data.queue;
-            }
-            if (data.currentSong !== undefined) {
-              setCurrentSong(data.currentSong);
-              currentSongRef.current = data.currentSong;
-            }
-            if (data.volume !== undefined) setVolume(data.volume);
-            if (data.isMuted !== undefined) setIsMuted(data.isMuted);
-            if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
-            if (data.isTvFullscreen !== undefined) setIsTvFullscreen(data.isTvFullscreen);
+        if (data.type === 'SYNC') {
+          if (data.queue !== undefined) {
+            setQueue(data.queue);
+            queueRef.current = data.queue;
           }
-        });
-
-        conn.on('close', () => {
-          isConnectingRef.current = false;
-          setConnectionStatus('disconnected');
-        });
-
-        conn.on('error', () => {
-          isConnectingRef.current = false;
-          setConnectionStatus('disconnected');
-        });
-      } catch (err) {
-        isConnectingRef.current = false;
-        setConnectionStatus('disconnected');
-      }
-    };
-
-    if (peer.open) {
-      establishDataConnection();
-    } else {
-      peer.on('open', () => {
-        establishDataConnection();
+          if (data.currentSong !== undefined) {
+            setCurrentSong(data.currentSong);
+            currentSongRef.current = data.currentSong;
+          }
+          if (data.volume !== undefined) setVolume(data.volume);
+          if (data.isMuted !== undefined) setIsMuted(data.isMuted);
+          if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
+          if (data.isTvFullscreen !== undefined) setIsTvFullscreen(data.isTvFullscreen);
+        }
       });
-    }
+
+      conn.on('close', () => setConnectionStatus('disconnected'));
+      conn.on('error', () => setConnectionStatus('disconnected'));
+    });
 
     peer.on('disconnected', () => {
       if (peer && !peer.destroyed) peer.reconnect();
     });
 
     peer.on('error', () => {
-      isConnectingRef.current = false;
       setConnectionStatus('disconnected');
     });
   }, []);
 
-  // ระบบตรวจจับชีพจร (Heartbeat & Auto Reconnect Watchdog)
+  // ระบบเฝ้าระวังการเชื่อมต่อตลอดเวลา (Auto-Reconnect เมื่อสลับแอป)
   useEffect(() => {
     if (viewMode !== 'remote') return;
 
-    const watchdogTimer = setInterval(() => {
+    const watchdog = setInterval(() => {
       const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
       if (!target) return;
 
       if (!connRef.current || !connRef.current.open) {
-        // หากสายหลุด ให้สั่งต่อใหม่ทันทีแบบเงียบๆ
         connectToHost(target);
       } else {
-        // เลี้ยงสายไว้ไม่ให้เราเตอร์หรือเบราว์เซอร์ตัดการเชื่อมต่อ
         try {
           connRef.current.send({ type: 'PING' });
         } catch (_) {
           connectToHost(target);
         }
       }
-    }, 3500);
+    }, 4000);
 
     const handleReturnToTab = () => {
       if (document.visibilityState === 'visible') {
@@ -559,13 +614,12 @@ export default function App() {
     window.addEventListener('focus', handleReturnToTab);
 
     return () => {
-      clearInterval(watchdogTimer);
+      clearInterval(watchdog);
       document.removeEventListener('visibilitychange', handleReturnToTab);
       window.removeEventListener('focus', handleReturnToTab);
     };
   }, [viewMode, connectToHost]);
 
-  // ออกจากห้องกลับสู่หน้า Home อย่างเป็นทางการ (ล้างค่าความจำทั้งหมด)
   const exitRemoteMode = () => {
     try {
       localStorage.removeItem('karaoke_saved_room');
@@ -616,7 +670,8 @@ export default function App() {
               } else if (e.data === window.YT.PlayerState.PAUSED) {
                 setIsPlaying(false);
               } else if (e.data === window.YT.PlayerState.ENDED) {
-                handleNextSong();
+                // เมื่อเพลงจบ ให้แสดงหน้าต่างคิดคะแนนทันที
+                triggerKaraokeScore(currentSongRef.current);
               }
             },
           },
@@ -654,17 +709,14 @@ export default function App() {
         currentSongRef.current = next;
         queueRef.current = remaining;
 
-        if (connRef.current && connRef.current.open) {
-          connRef.current.send({ type: 'SYNC', queue: remaining, currentSong: next });
-        }
+        broadcastToAllRemotes({ type: 'SYNC', queue: remaining, currentSong: next });
+        showToast(`กำลังเล่น: ${next.title}`);
         return remaining;
       } else {
         setCurrentSong(null);
         currentSongRef.current = null;
         queueRef.current = [];
-        if (connRef.current && connRef.current.open) {
-          connRef.current.send({ type: 'SYNC', queue: [], currentSong: null });
-        }
+        broadcastToAllRemotes({ type: 'SYNC', queue: [], currentSong: null });
         showToast('คิวเพลงหมดแล้ว');
         return [];
       }
@@ -728,32 +780,34 @@ export default function App() {
     addSong(newSong, playNext);
     setDirectUrl('');
     setShowUrlInput(false);
-    showToast(playNext ? '⚡ แทรกเพลงจากลิงก์แล้ว' : '✔ เพิ่มเพลงจากลิงก์ในคิวแล้ว');
+    showToast(playNext ? 'แทรกเพลงจากลิงก์แล้ว' : 'เพิ่มเพลงจากลิงก์ในคิวแล้ว');
   };
 
   const addSong = (song, playNext = false) => {
+    recordSongToHistory(song); // บันทึกลงประวัติการร้องอัตโนมัติ
+
     if (viewMode === 'remote') {
       sendCommand({ type: playNext ? 'PLAY_NEXT' : 'ADD_QUEUE', song });
-      showToast(playNext ? '⚡ แทรกคิวบนทีวีแล้ว' : '✔ เพิ่มลงคิวทีวีแล้ว');
+      showToast(playNext ? 'แทรกคิวบนทีวีแล้ว' : 'เพิ่มลงคิวทีวีแล้ว');
     } else {
       if (!currentSong) {
         setCurrentSong(song);
         currentSongRef.current = song;
-        showToast(`▶ กำลังเล่น: ${song.title}`);
+        showToast(`กำลังเล่น: ${song.title}`);
       } else if (playNext) {
         setQueue((prev) => {
           const updated = [song, ...prev];
           queueRef.current = updated;
           return updated;
         });
-        showToast('⚡ แทรกคิวแล้ว');
+        showToast('แทรกคิวแล้ว');
       } else {
         setQueue((prev) => {
           const updated = [...prev, song];
           queueRef.current = updated;
           return updated;
         });
-        showToast('✔ เพิ่มเพลงลงคิวแล้ว');
+        showToast('เพิ่มเพลงลงคิวแล้ว');
       }
     }
   };
@@ -880,6 +934,25 @@ export default function App() {
           </div>
         </div>
 
+        {/* หน้าต่างคะแนนลอยบนรีโมท */}
+        {scoreData && (
+          <div className="p-4 mx-4 mt-3 bg-gradient-to-r from-cyan-950/80 to-zinc-900 border border-cyan-500/40 rounded-2xl flex items-center justify-between shadow-xl animate-in fade-in">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-cyan-500/20 text-cyan-400 rounded-xl">
+                <Award size={24} />
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">คะแนนเพลงล่าสุด</span>
+                <h4 className="text-xs font-semibold text-white truncate max-w-[180px]">{scoreData.songTitle}</h4>
+              </div>
+            </div>
+            <div className="text-right">
+              <span className="text-2xl font-black text-cyan-300">{scoreData.score}</span>
+              <span className="text-xs text-zinc-500"> / 100</span>
+            </div>
+          </div>
+        )}
+
         {toastMessage && (
           <div className="fixed top-14 md:top-16 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-xs md:text-sm font-bold px-4 md:px-6 py-2 md:py-2.5 rounded-full shadow-xl">
             {toastMessage}
@@ -894,15 +967,15 @@ export default function App() {
                 <div className="flex gap-2 mb-2 md:mb-3">
                   <button
                     onClick={() => setSearchMode('karaoke')}
-                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition ${searchMode === 'karaoke' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
+                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition flex items-center justify-center gap-1.5 ${searchMode === 'karaoke' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
                   >
-                    🎤 คาราโอเกะ
+                    <Mic size={14} /> คาราโอเกะ
                   </button>
                   <button
                     onClick={() => setSearchMode('original')}
-                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition ${searchMode === 'original' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
+                    className={`flex-1 py-1.5 md:py-2.5 text-xs md:text-sm font-bold rounded-xl transition flex items-center justify-center gap-1.5 ${searchMode === 'original' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 bg-zinc-950'}`}
                   >
-                    🎵 เพลงปกติ
+                    <Music size={14} /> เพลงปกติ
                   </button>
                 </div>
                 <form onSubmit={handleSearch} className="flex gap-2 md:gap-3">
@@ -929,7 +1002,7 @@ export default function App() {
                     className="text-[11px] md:text-xs font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition active:scale-95"
                   >
                     <LinkIcon size={14} />
-                    <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์ YouTube (ไม่เสียโควต้า)'}</span>
+                    <span>{showUrlInput ? 'ซ่อนช่องใส่ลิงก์' : 'วางลิงก์ YouTube โดยตรง (ไม่เสียโควต้า)'}</span>
                   </button>
 
                   {showUrlInput && (
@@ -945,9 +1018,9 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleAddDirectUrl(true)}
-                          className="px-3 md:px-4 py-1.5 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] md:text-xs font-bold active:scale-95"
+                          className="px-3 md:px-4 py-1.5 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] md:text-xs font-bold active:scale-95 flex items-center gap-1"
                         >
-                          แทรกคิว
+                          <Zap size={12} /> แทรกคิว
                         </button>
                         <button
                           type="button"
@@ -970,43 +1043,110 @@ export default function App() {
                 </div>
                 {searchResults.length === 0 && (
                   <div className="text-center py-12 md:py-20 text-zinc-600 text-xs md:text-sm bg-zinc-900/30 rounded-2xl border border-zinc-800/40">
-                    พิมพ์ชื่อเพลงหรือวางลิงก์ YouTube ด้านบนเพื่อเพิ่มเพลง
+                    พิมพ์ชื่อเพลงหรือวางลิงก์ YouTube ด้านบนเพื่อเริ่มร้องเพลง
                   </div>
                 )}
-                {searchResults.map((song) => (
-                  <div key={song.id} className="flex items-center gap-3 md:gap-4 p-2.5 md:p-3 bg-zinc-900 border border-zinc-800 rounded-2xl">
-                    <div className="relative w-16 h-12 md:w-24 md:h-16 rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
-                      <img 
-                        src={getThumbnail(song.ytId, song.thumbnail)} 
-                        alt={song.title} 
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
-                      <span className="absolute bottom-1 right-1 text-[9px] md:text-[11px] px-1 py-0.2 bg-black/80 rounded text-cyan-300 font-bold">
-                        {song.isKaraoke ? '🎤' : '🎵'}
-                      </span>
-                    </div>
+                {searchResults.map((song) => {
+                  const isFav = favorites.some((f) => f.ytId === song.ytId);
+                  return (
+                    <div key={song.id} className="flex items-center gap-3 md:gap-4 p-2.5 md:p-3 bg-zinc-900 border border-zinc-800 rounded-2xl">
+                      <div className="relative w-16 h-12 md:w-24 md:h-16 rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                        <img 
+                          src={getThumbnail(song.ytId, song.thumbnail)} 
+                          alt={song.title} 
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        <span className="absolute bottom-1 right-1 text-[9px] md:text-[11px] px-1 py-0.5 bg-black/80 rounded text-cyan-300 font-bold flex items-center">
+                          {song.isKaraoke ? <Mic size={10} /> : <Music size={10} />}
+                        </span>
+                      </div>
 
-                    <div className="truncate flex-1 min-w-0">
-                      <p className="text-xs md:text-sm font-semibold truncate text-white">{song.title}</p>
-                      <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
-                    </div>
+                      <div className="truncate flex-1 min-w-0">
+                        <p className="text-xs md:text-sm font-semibold truncate text-white">{song.title}</p>
+                        <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
+                      </div>
 
-                    <div className="flex gap-1.5 shrink-0">
-                      <button onClick={() => addSong(song, true)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-zinc-800 text-zinc-300 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
-                        แทรก
-                      </button>
-                      <button onClick={() => addSong(song, false)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
-                        + คิว
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button 
+                          onClick={() => toggleFavorite(song)}
+                          className={`p-1.5 rounded-lg transition active:scale-90 ${isFav ? 'text-amber-400 bg-amber-400/10' : 'text-zinc-500 hover:text-zinc-300 bg-zinc-800'}`}
+                          title={isFav ? 'ลบจากเพลงโปรด' : 'เพิ่มในเพลงโปรด'}
+                        >
+                          <Star size={15} fill={isFav ? 'currentColor' : 'none'} />
+                        </button>
+                        <button onClick={() => addSong(song, true)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-zinc-800 text-zinc-300 rounded-lg text-[10px] md:text-xs font-bold active:scale-95 flex items-center gap-1">
+                          <Zap size={12} /> แทรก
+                        </button>
+                        <button onClick={() => addSong(song, false)} className="px-2.5 md:px-3.5 py-1.5 md:py-2 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
+                          + คิว
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {/* TAB 2: จัดการคิวเพลง */}
+          {/* TAB 2: คลังเพลง (Favorites & History) */}
+          {mobileTab === 'library' && (
+            <div className="space-y-4 md:space-y-6">
+              <div className="flex bg-zinc-900 p-1 rounded-2xl border border-zinc-800">
+                <button
+                  onClick={() => setLibraryTab('favorites')}
+                  className={`flex-1 py-2 text-xs md:text-sm font-bold rounded-xl transition flex items-center justify-center gap-1.5 ${libraryTab === 'favorites' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  <Star size={14} /> เพลงโปรด ({favorites.length})
+                </button>
+                <button
+                  onClick={() => setLibraryTab('history')}
+                  className={`flex-1 py-2 text-xs md:text-sm font-bold rounded-xl transition flex items-center justify-center gap-1.5 ${libraryTab === 'history' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  <History size={14} /> ประวัติการร้อง ({history.length})
+                </button>
+              </div>
+
+              <div className="space-y-2 md:space-y-3">
+                {(libraryTab === 'favorites' ? favorites : history).length === 0 ? (
+                  <div className="text-center py-16 text-zinc-600 text-xs md:text-sm bg-zinc-900/30 rounded-2xl border border-zinc-800/40">
+                    {libraryTab === 'favorites' ? 'ยังไม่มีเพลงโปรด กดปุ่มดาวในช่องค้นหาเพื่อบันทึกเพลงที่ชอบ' : 'ยังไม่มีประวัติการร้องเพลง'}
+                  </div>
+                ) : (
+                  (libraryTab === 'favorites' ? favorites : history).map((song) => {
+                    const isFav = favorites.some((f) => f.ytId === song.ytId);
+                    return (
+                      <div key={song.id} className="flex items-center gap-3 p-2.5 bg-zinc-900 border border-zinc-800 rounded-2xl">
+                        <div className="relative w-16 h-12 rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                          <img src={getThumbnail(song.ytId, song.thumbnail)} alt="" className="w-full h-full object-cover" />
+                        </div>
+                        <div className="truncate flex-1 min-w-0">
+                          <p className="text-xs md:text-sm font-semibold truncate text-white">{song.title}</p>
+                          <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button 
+                            onClick={() => toggleFavorite(song)}
+                            className={`p-1.5 rounded-lg transition ${isFav ? 'text-amber-400 bg-amber-400/10' : 'text-zinc-500 bg-zinc-800'}`}
+                          >
+                            <Star size={14} fill={isFav ? 'currentColor' : 'none'} />
+                          </button>
+                          <button onClick={() => addSong(song, true)} className="px-2.5 py-1.5 bg-zinc-800 text-zinc-300 rounded-lg text-[10px] md:text-xs font-bold active:scale-95 flex items-center gap-1">
+                            <Zap size={11} /> แทรก
+                          </button>
+                          <button onClick={() => addSong(song, false)} className="px-2.5 py-1.5 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95">
+                            + คิว
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: จัดการคิวเพลง */}
           {mobileTab === 'queue' && (
             <div className="space-y-4 md:space-y-6">
               <div className="p-3.5 md:p-4 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3.5 md:gap-4">
@@ -1022,8 +1162,8 @@ export default function App() {
                   )}
                 </div>
                 <div className="truncate flex-1 min-w-0">
-                  <span className="text-[10px] md:text-xs font-bold text-cyan-400 uppercase tracking-wider block">
-                    {currentSong ? 'กำลังเล่นอยู่บนทีวี 🎤' : 'ยังไม่มีเพลงกำลังเล่น'}
+                  <span className="text-[10px] md:text-xs font-bold text-cyan-400 uppercase tracking-wider block flex items-center gap-1">
+                    <Mic size={12} /> {currentSong ? 'กำลังเล่นอยู่บนทีวี' : 'ยังไม่มีเพลงกำลังเล่น'}
                   </span>
                   <p className="text-xs md:text-sm font-bold text-white truncate mt-0.5">
                     {currentSong ? currentSong.title : 'เลือกเพลงเพื่อเริ่มร้อง'}
@@ -1039,7 +1179,7 @@ export default function App() {
                   <span className="text-xs md:text-sm font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] md:text-xs text-zinc-500">แตะค้างที่ ⠿ เพื่อลาก หรือกดลูกศร</span>
+                  <span className="text-[10px] md:text-xs text-zinc-500">แตะค้างที่ไอคอนเพื่อลากสลับคิว</span>
                 </div>
 
                 {queue.length === 0 ? (
@@ -1121,7 +1261,7 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 3: แผงควบคุม & ทีวี */}
+          {/* TAB 4: แผงควบคุม & ทีวี */}
           {mobileTab === 'controls' && (
             <div className="space-y-4 md:space-y-6">
               <div className="p-4 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-between">
@@ -1193,13 +1333,13 @@ export default function App() {
               </div>
 
               <div className="p-4 md:p-5 bg-zinc-900 rounded-2xl border border-zinc-800">
-                <span className="text-xs md:text-sm font-bold text-white block mb-3 md:mb-4">ควบคุมเพลง</span>
-                <div className="grid grid-cols-3 gap-2 md:gap-3">
+                <span className="text-xs md:text-sm font-bold text-white block mb-3 md:mb-4">ควบคุมการเล่น</span>
+                <div className="grid grid-cols-3 gap-2 md:gap-3 mb-3">
                   <button
                     onClick={() => sendCommand({ type: 'REPLAY' })}
                     className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
-                    <RotateCcw size={22} className="text-cyan-400 mb-1" />
+                    <RotateCcw size={20} className="text-cyan-400 mb-1" />
                     <span className="text-xs md:text-sm font-semibold">ร้องใหม่</span>
                   </button>
 
@@ -1207,7 +1347,7 @@ export default function App() {
                     onClick={() => sendCommand({ type: 'TOGGLE_PLAY' })}
                     className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-cyan-500 text-zinc-950 active:scale-95 font-bold"
                   >
-                    {isPlaying ? <Pause size={22} className="mb-1" /> : <Play size={22} className="mb-1" />}
+                    {isPlaying ? <Pause size={20} className="mb-1" /> : <Play size={20} className="mb-1" />}
                     <span className="text-xs md:text-sm">{isPlaying ? 'หยุด' : 'เล่นต่อ'}</span>
                   </button>
 
@@ -1215,23 +1355,39 @@ export default function App() {
                     onClick={() => sendCommand({ type: 'SKIP' })}
                     className="flex flex-col items-center justify-center p-3 md:p-4 rounded-xl bg-zinc-950 border border-zinc-800 active:scale-95"
                   >
-                    <SkipForward size={22} className="text-cyan-400 mb-1" />
-                    <span className="text-xs md:text-sm font-semibold">ข้ามเพลง (เล่นคิวแรก)</span>
+                    <SkipForward size={20} className="text-cyan-400 mb-1" />
+                    <span className="text-xs md:text-sm font-semibold">ข้ามเพลง</span>
                   </button>
                 </div>
+
+                {/* ปุ่มคิดคะแนนปาร์ตี้ */}
+                <button
+                  onClick={() => sendCommand({ type: 'FINISH_WITH_SCORE' })}
+                  className="w-full py-3 bg-zinc-950 hover:bg-zinc-800 border border-cyan-500/40 text-cyan-300 font-bold rounded-xl text-xs md:text-sm flex items-center justify-center gap-2 transition active:scale-95"
+                >
+                  <Award size={16} /> จบเพลง & คิดคะแนนทันที
+                </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Tab Bar ล่าง */}
-        <div className="fixed bottom-0 left-0 right-0 max-w-md md:max-w-2xl lg:max-w-3xl mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2.5 md:py-3.5 px-4 md:px-8 z-40">
+        {/* Tab Bar ล่าง (4 แท็บมาตรฐาน) */}
+        <div className="fixed bottom-0 left-0 right-0 max-w-md md:max-w-2xl lg:max-w-3xl mx-auto bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800 flex items-center justify-around py-2.5 md:py-3.5 px-3 md:px-8 z-40">
           <button
             onClick={() => setMobileTab('search')}
             className={`flex flex-col items-center gap-1 flex-1 py-1 transition ${mobileTab === 'search' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
             <Search className="w-5 h-5 md:w-6 md:h-6" />
-            <span className="text-[11px] md:text-xs">ค้นหาเพลง</span>
+            <span className="text-[10px] md:text-xs">ค้นหา</span>
+          </button>
+
+          <button
+            onClick={() => setMobileTab('library')}
+            className={`flex flex-col items-center gap-1 flex-1 py-1 transition ${mobileTab === 'library' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
+          >
+            <Star className="w-5 h-5 md:w-6 md:h-6" />
+            <span className="text-[10px] md:text-xs">คลังเพลง</span>
           </button>
 
           <button
@@ -1239,9 +1395,9 @@ export default function App() {
             className={`flex flex-col items-center gap-1 flex-1 py-1 relative transition ${mobileTab === 'queue' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
             <ListMusic className="w-5 h-5 md:w-6 md:h-6" />
-            <span className="text-[11px] md:text-xs">จัดการคิว</span>
+            <span className="text-[10px] md:text-xs">คิวเพลง</span>
             {queue.length > 0 && (
-              <span className="absolute top-0 right-6 md:right-12 w-4 h-4 md:w-5 md:h-5 rounded-full bg-cyan-500 text-zinc-950 text-[10px] md:text-xs font-bold flex items-center justify-center">
+              <span className="absolute top-0 right-5 md:right-12 w-4 h-4 md:w-5 md:h-5 rounded-full bg-cyan-500 text-zinc-950 text-[10px] md:text-xs font-bold flex items-center justify-center">
                 {queue.length}
               </span>
             )}
@@ -1252,7 +1408,7 @@ export default function App() {
             className={`flex flex-col items-center gap-1 flex-1 py-1 transition ${mobileTab === 'controls' ? 'text-cyan-400 font-bold' : 'text-zinc-500'}`}
           >
             <SlidersHorizontal className="w-5 h-5 md:w-6 md:h-6" />
-            <span className="text-[11px] md:text-xs">ควบคุม & ทีวี</span>
+            <span className="text-[10px] md:text-xs">ควบคุม</span>
           </button>
         </div>
       </div>
@@ -1266,7 +1422,40 @@ export default function App() {
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(remoteUrl)}`;
 
   return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none">
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none relative">
+      {/* หน้าต่างแสดงคะแนนบนจอทีวี (Karaoke Score Modal) */}
+      {scoreData && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-50 animate-in fade-in zoom-in duration-300">
+          <div className="bg-zinc-900/90 border border-cyan-500/40 rounded-3xl p-8 max-w-sm w-full text-center space-y-6 shadow-2xl relative">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center shadow-lg">
+              <Award size={32} />
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-xs uppercase tracking-widest text-cyan-400 font-bold">ผลคะแนนการร้อง</span>
+              <h3 className="text-base font-bold text-white truncate max-w-xs mx-auto">{scoreData.songTitle}</h3>
+            </div>
+
+            <div className="py-2">
+              <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 tracking-tight">
+                {scoreData.score}
+              </div>
+              <span className="text-xs text-zinc-500 font-semibold tracking-wider uppercase mt-1 block">คะแนนเต็ม 100</span>
+            </div>
+
+            <div className="pt-2">
+              <button
+                onClick={dismissScoreAndNext}
+                className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition active:scale-95"
+              >
+                ร้องเพลงถัดไปทันที
+              </button>
+              <span className="text-[11px] text-zinc-500 mt-2 block">เพลงถัดไปจะเริ่มอัตโนมัติใน 5 วินาที</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {toastMessage && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
           {toastMessage}
@@ -1303,17 +1492,16 @@ export default function App() {
               <Maximize2 size={16} />
             </button>
 
+            {/* แสดงจำนวนรีโมทที่ต่ออยู่พร้อมกัน */}
             <button
               onClick={() => setShowRemoteModal(true)}
               className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white transition shadow-sm"
             >
               <Smartphone size={15} className="text-cyan-400" />
               <span>รหัสห้อง: <strong className="text-cyan-400 tracking-wider">{roomCode}</strong></span>
-              {connectionStatus === 'connected' ? (
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              ) : (
-                <span className="w-2 h-2 rounded-full bg-zinc-600" />
-              )}
+              <span className="px-1.5 py-0.5 rounded bg-zinc-950 text-[10px] text-cyan-300 border border-zinc-800 font-normal">
+                {connectedClientsCount} รีโมท
+              </span>
             </button>
           </div>
         </header>
@@ -1330,7 +1518,7 @@ export default function App() {
                 <div className="space-y-1">
                   <h2 className="text-xl font-bold text-white tracking-wide">พร้อมเริ่มร้องคาราโอเกะ</h2>
                   <p className="text-xs text-zinc-400">
-                    สแกน QR Code เพื่อใช้มือถือเป็นรีโมท หรือเลือกเพลงจากแถบด้านขวา
+                    สแกน QR Code เพื่อใช้มือถือเป็นรีโมท รองรับหลายเครื่องพร้อมกัน
                   </p>
                 </div>
                 <div className="p-3 bg-white rounded-2xl shadow-xl">
@@ -1369,7 +1557,7 @@ export default function App() {
 
               <div className="truncate">
                 <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-cyan-300 inline-block mb-0.5">
-                  {currentSong ? (currentSong.isKaraoke ? '🎤 คาราโอเกะ' : '🎵 เพลงปกติ') : 'พร้อมใช้งาน'}
+                  {currentSong ? (currentSong.isKaraoke ? 'คาราโอเกะ' : 'เพลงปกติ') : 'พร้อมใช้งาน'}
                 </span>
                 <h2 className="text-xs font-bold text-white truncate">
                   {currentSong ? currentSong.title : 'รอเพลงจากรีโมทหรือคิวเพลง...'}
@@ -1394,6 +1582,13 @@ export default function App() {
                 <RotateCcw size={16} />
               </button>
               <button 
+                onClick={() => triggerKaraokeScore(currentSongRef.current)} 
+                className="flex items-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-cyan-300 border border-zinc-700 rounded-xl text-xs font-bold transition active:scale-95"
+                title="คิดคะแนนเพลงนี้"
+              >
+                <Award size={15} /> คิดคะแนน
+              </button>
+              <button 
                 onClick={handleNextSong} 
                 className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 rounded-xl text-xs font-bold transition active:scale-95"
               >
@@ -1411,13 +1606,13 @@ export default function App() {
                   onClick={() => setSearchMode('karaoke')}
                   className={`flex-1 py-1 text-xs font-bold rounded-lg transition ${searchMode === 'karaoke' ? 'bg-cyan-500 text-zinc-950' : 'bg-zinc-900 text-zinc-400'}`}
                 >
-                  🎤 คาราโอเกะ
+                  คาราโอเกะ
                 </button>
                 <button
                   onClick={() => setSearchMode('original')}
                   className={`flex-1 py-1 text-xs font-bold rounded-lg transition ${searchMode === 'original' ? 'bg-cyan-500 text-zinc-950' : 'bg-zinc-900 text-zinc-400'}`}
                 >
-                  🎵 เพลงปกติ
+                  เพลงปกติ
                 </button>
               </div>
               <form onSubmit={handleSearch} className="flex gap-2">
@@ -1440,7 +1635,7 @@ export default function App() {
                   className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition"
                 >
                   <LinkIcon size={13} />
-                  <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์ YouTube (ไม่เสียโควต้า)'}</span>
+                  <span>{showUrlInput ? 'ซ่อนช่องใส่ลิงก์' : 'วางลิงก์ YouTube โดยตรง (ไม่เสียโควต้า)'}</span>
                 </button>
 
                 {showUrlInput && (
@@ -1456,9 +1651,9 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleAddDirectUrl(true)}
-                        className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold"
+                        className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold flex items-center gap-1"
                       >
-                        แทรก
+                        <Zap size={11} /> แทรก
                       </button>
                       <button
                         type="button"
@@ -1495,8 +1690,12 @@ export default function App() {
                           <p className="text-[10px] text-zinc-400 truncate">{song.artist}</p>
                         </div>
                         <div className="flex gap-1 shrink-0">
-                          <button onClick={() => addSong(song, true)} className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold">แทรก</button>
-                          <button onClick={() => addSong(song, false)} className="px-2 py-1 bg-cyan-500 text-zinc-950 rounded text-[10px] font-bold">+ คิว</button>
+                          <button onClick={() => addSong(song, true)} className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold flex items-center gap-1">
+                            <Zap size={11} /> แทรก
+                          </button>
+                          <button onClick={() => addSong(song, false)} className="px-2 py-1 bg-cyan-500 text-zinc-950 rounded text-[10px] font-bold">
+                            + คิว
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1552,7 +1751,7 @@ export default function App() {
               <img src="/logo.svg" alt="Logo" className="w-12 h-12 object-contain mx-auto mb-3" />
               <h3 className="font-bold text-lg text-white">ใช้มือถือเป็นรีโมท</h3>
               <p className="text-xs text-zinc-400 mt-1">
-                สแกน QR Code ด้วยกล้องมือถือ เพื่อเริ่มสั่งงาน
+                สแกน QR Code เพื่อเชื่อมต่อ (รองรับหลายเครื่องพร้อมกัน)
               </p>
             </div>
 
@@ -1565,7 +1764,7 @@ export default function App() {
             </div>
 
             <div className="text-center text-xs text-zinc-400">
-              สถานะ: {connectionStatus === 'connected' ? <span className="text-emerald-400 font-bold">● มือถือเชื่อมต่อแล้ว</span> : <span className="text-amber-400">○ รอการสแกน...</span>}
+              สถานะ: <span className="text-cyan-400 font-bold">{connectedClientsCount} เครื่องเชื่อมต่ออยู่</span>
             </div>
           </div>
         </div>
