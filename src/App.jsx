@@ -4,7 +4,7 @@ import {
   Play, Pause, SkipForward, RotateCcw, Search, 
   QrCode, Smartphone, ListMusic, X, Check, Wifi, WifiOff, Loader2,
   Trash2, Volume2, VolumeX, Volume1, Maximize2, Minimize2, 
-  SlidersHorizontal, Link as LinkIcon, Tv, GripVertical, ArrowLeft,
+  SlidersHorizontal, Link as LinkIcon, Tv, ArrowLeft,
   ChevronUp, ChevronDown, Star, History, Award, Zap, Music, Mic
 } from 'lucide-react';
 
@@ -56,14 +56,26 @@ export default function App() {
   const initialSession = getInitialSession();
   const [viewMode, setViewMode] = useState(initialSession.mode);
 
-  // Player States
-  const [currentSong, setCurrentSong] = useState(null);
-  const [queue, setQueue] = useState([]);
+  // แคชคิวเพลงไว้เพื่อป้องกันเพลงหายตอนรีเฟรช
+  const [currentSong, setCurrentSong] = useState(() => {
+    try {
+      const cached = localStorage.getItem('karaoke_cached_current');
+      return cached ? JSON.parse(cached) : null;
+    } catch (_) { return null; }
+  });
+
+  const [queue, setQueue] = useState(() => {
+    try {
+      const cached = localStorage.getItem('karaoke_cached_queue');
+      return cached ? JSON.parse(cached) : [];
+    } catch (_) { return []; }
+  });
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(100);
   const [isMuted, setIsMuted] = useState(false);
   const [isTvFullscreen, setIsTvFullscreen] = useState(false);
-  const [scoreData, setScoreData] = useState(null); // { show: boolean, score: number, songTitle: string }
+  const [scoreData, setScoreData] = useState(null);
 
   // Search & URL States
   const [searchQuery, setSearchQuery] = useState('');
@@ -81,30 +93,32 @@ export default function App() {
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('karaoke_history') || '[]'); } catch (_) { return []; }
   });
-  const [libraryTab, setLibraryTab] = useState('favorites'); // 'favorites' | 'history'
+  const [libraryTab, setLibraryTab] = useState('favorites');
 
   // Remote & WebRTC States
   const [roomCode, setRoomCode] = useState('');
-  const [mobileTab, setMobileTab] = useState('search'); // 'search' | 'library' | 'queue' | 'controls'
+  const [mobileTab, setMobileTab] = useState('search');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [inputRoomCode, setInputRoomCode] = useState(initialSession.room);
   const [connectedClientsCount, setConnectedClientsCount] = useState(0);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
-  // Drag & Drop / Touch Reorder
-  const [draggedIndex, setDraggedIndex] = useState(null);
-  const dragItemIndex = useRef(null);
-  const touchStartIndex = useRef(null);
-
   const peerRef = useRef(null);
   const connRef = useRef(null);
-  const clientConnsRef = useRef(new Set()); // รองรับ Multi-Remote
+  const clientConnsRef = useRef(new Set());
   const ytPlayerRef = useRef(null);
   const queueRef = useRef(queue);
   queueRef.current = queue;
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
+  const isTvFullscreenRef = useRef(isTvFullscreen);
+  isTvFullscreenRef.current = isTvFullscreen;
+
   const activeRoomCodeRef = useRef(initialSession.room);
   const scoreTimerRef = useRef(null);
 
@@ -112,6 +126,18 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
   };
+
+  // แคชคิวเพลงลง LocalStorage ตลอดเวลา
+  useEffect(() => {
+    try {
+      localStorage.setItem('karaoke_cached_queue', JSON.stringify(queue));
+      if (currentSong) {
+        localStorage.setItem('karaoke_cached_current', JSON.stringify(currentSong));
+      } else {
+        localStorage.removeItem('karaoke_cached_current');
+      }
+    } catch (_) {}
+  }, [queue, currentSong]);
 
   useEffect(() => {
     const session = getInitialSession();
@@ -151,7 +177,6 @@ export default function App() {
     } catch (_) {}
   };
 
-  // Broadcast คำสั่งจากทีวีไปยังทุกรีโมทที่เชื่อมต่ออยู่
   const broadcastToAllRemotes = useCallback((data) => {
     clientConnsRef.current.forEach((conn) => {
       if (conn && conn.open) {
@@ -163,7 +188,6 @@ export default function App() {
     setConnectedClientsCount(clientConnsRef.current.size);
   }, []);
 
-  // ส่งคำสั่งจากรีโมทไปยังทีวี
   const sendCommand = (payload) => {
     if (connRef.current && connRef.current.open) {
       try {
@@ -184,6 +208,7 @@ export default function App() {
   // ระบบ Favorite & History (คลังเพลงส่วนตัว)
   // -------------------------------------------------------------
   const toggleFavorite = (song) => {
+    if (!song) return;
     setFavorites((prev) => {
       const exists = prev.some((s) => s.ytId === song.ytId);
       let updated;
@@ -202,27 +227,15 @@ export default function App() {
   const recordSongToHistory = (song) => {
     setHistory((prev) => {
       const filtered = prev.filter((s) => s.ytId !== song.ytId);
-      const updated = [song, ...filtered].slice(0, 30); // เก็บประวัติล่าสุด 30 เพลง
+      const updated = [song, ...filtered].slice(0, 30);
       try { localStorage.setItem('karaoke_history', JSON.stringify(updated)); } catch (_) {}
       return updated;
     });
   };
 
   // -------------------------------------------------------------
-  // ระบบจัดการคิวเพลง (ย้ายตำแหน่ง & ลบเพลง)
+  // ระบบจัดการคิวเพลง (เลื่อนขึ้น/ลง ด้วยลูกศร & ลบเพลง)
   // -------------------------------------------------------------
-  const swapQueueLocally = (fromIdx, toIdx) => {
-    if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0) return;
-    setQueue((prev) => {
-      if (fromIdx >= prev.length || toIdx >= prev.length) return prev;
-      const updated = [...prev];
-      const [moved] = updated.splice(fromIdx, 1);
-      updated.splice(toIdx, 0, moved);
-      queueRef.current = updated;
-      return updated;
-    });
-  };
-
   const moveQueue = (index, direction) => {
     setQueue((prevQueue) => {
       const targetIndex = index + direction;
@@ -236,6 +249,8 @@ export default function App() {
       queueRef.current = newQueue;
       if (viewMode === 'remote') {
         sendCommand({ type: 'UPDATE_QUEUE', queue: newQueue });
+      } else {
+        broadcastToAllRemotes({ type: 'SYNC', queue: newQueue });
       }
       return newQueue;
     });
@@ -247,66 +262,12 @@ export default function App() {
       queueRef.current = updated;
       if (viewMode === 'remote') {
         sendCommand({ type: 'UPDATE_QUEUE', queue: updated });
+      } else {
+        broadcastToAllRemotes({ type: 'SYNC', queue: updated });
       }
       return updated;
     });
     showToast('ลบเพลงออกจากคิวแล้ว');
-  };
-
-  const handleTouchStart = (e, index) => {
-    touchStartIndex.current = index;
-    setDraggedIndex(index);
-  };
-
-  const handleTouchMove = (e) => {
-    if (touchStartIndex.current === null) return;
-    const touch = e.touches[0];
-    const cards = document.querySelectorAll('[data-queue-idx]');
-    cards.forEach((card) => {
-      const rect = card.getBoundingClientRect();
-      if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
-        const targetIdx = Number(card.dataset.queueIdx);
-        if (!isNaN(targetIdx) && targetIdx !== touchStartIndex.current) {
-          swapQueueLocally(touchStartIndex.current, targetIdx);
-          touchStartIndex.current = targetIdx;
-          setDraggedIndex(targetIdx);
-        }
-      }
-    });
-  };
-
-  const handleTouchEnd = () => {
-    if (touchStartIndex.current !== null && viewMode === 'remote') {
-      sendCommand({ type: 'UPDATE_QUEUE', queue: queueRef.current });
-    }
-    touchStartIndex.current = null;
-    setDraggedIndex(null);
-  };
-
-  const handleDragStart = (e, index) => {
-    dragItemIndex.current = index;
-    setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-  };
-
-  const handleDragEnter = (e, index) => {
-    e.preventDefault();
-    if (dragItemIndex.current === null || dragItemIndex.current === index) return;
-    swapQueueLocally(dragItemIndex.current, index);
-    dragItemIndex.current = index;
-    setDraggedIndex(index);
-  };
-
-  const handleDragEnd = () => {
-    if (dragItemIndex.current !== null && viewMode === 'remote') {
-      sendCommand({ type: 'UPDATE_QUEUE', queue: queueRef.current });
-    }
-    dragItemIndex.current = null;
-    setDraggedIndex(null);
   };
 
   // -------------------------------------------------------------
@@ -325,7 +286,7 @@ export default function App() {
     if (scoreTimerRef.current) clearTimeout(scoreTimerRef.current);
     scoreTimerRef.current = setTimeout(() => {
       dismissScoreAndNext();
-    }, 5500); // แสดงคะแนน 5.5 วินาทีแล้วเริ่มเพลงถัดไป
+    }, 5500);
   };
 
   const dismissScoreAndNext = () => {
@@ -369,22 +330,37 @@ export default function App() {
       setConnectedClientsCount(clientConnsRef.current.size);
       showToast('รีโมทใหม่เชื่อมต่อแล้ว');
 
-      setTimeout(() => {
+      const sendFullSync = () => {
         if (conn.open) {
-          conn.send({ 
-            type: 'SYNC', 
-            queue: queueRef.current, 
-            currentSong: currentSongRef.current,
-            volume,
-            isMuted,
-            isTvFullscreen
-          });
+          try {
+            conn.send({ 
+              type: 'SYNC', 
+              queue: queueRef.current, 
+              currentSong: currentSongRef.current,
+              volume: volumeRef.current,
+              isMuted: isMutedRef.current,
+              isTvFullscreen: isTvFullscreenRef.current
+            });
+          } catch (_) {}
         }
-      }, 300);
+      };
+
+      if (conn.open) {
+        sendFullSync();
+      } else {
+        conn.on('open', sendFullSync);
+      }
+      setTimeout(sendFullSync, 400);
 
       conn.on('data', (data) => {
         if (data.type === 'PING') {
           conn.send({ type: 'PONG' });
+          return;
+        }
+
+        // รีโมทขอข้อมูลคิวเมื่อสลับแอปกลับมา
+        if (data.type === 'REQUEST_SYNC') {
+          sendFullSync();
           return;
         }
 
@@ -539,6 +515,10 @@ export default function App() {
       conn.on('open', () => {
         setConnectionStatus('connected');
         setShowRemoteModal(false);
+        // ร้องขอคิวเพลงและสถานะปัจจุบันจากทีวีทันทีที่ต่อติด
+        try {
+          conn.send({ type: 'REQUEST_SYNC' });
+        } catch (_) {}
       });
 
       conn.on('data', (data) => {
@@ -604,8 +584,12 @@ export default function App() {
     const handleReturnToTab = () => {
       if (document.visibilityState === 'visible') {
         const target = activeRoomCodeRef.current || localStorage.getItem('karaoke_saved_room');
-        if (target && (!connRef.current || !connRef.current.open)) {
-          connectToHost(target);
+        if (target) {
+          if (!connRef.current || !connRef.current.open) {
+            connectToHost(target);
+          } else {
+            try { connRef.current.send({ type: 'REQUEST_SYNC' }); } catch (_) {}
+          }
         }
       }
     };
@@ -624,6 +608,8 @@ export default function App() {
     try {
       localStorage.removeItem('karaoke_saved_room');
       localStorage.removeItem('karaoke_view_mode');
+      localStorage.removeItem('karaoke_cached_queue');
+      localStorage.removeItem('karaoke_cached_current');
       window.history.replaceState(null, '', window.location.pathname);
       window.location.hash = '';
     } catch (_) {}
@@ -670,7 +656,6 @@ export default function App() {
               } else if (e.data === window.YT.PlayerState.PAUSED) {
                 setIsPlaying(false);
               } else if (e.data === window.YT.PlayerState.ENDED) {
-                // เมื่อเพลงจบ ให้แสดงหน้าต่างคิดคะแนนทันที
                 triggerKaraokeScore(currentSongRef.current);
               }
             },
@@ -784,7 +769,7 @@ export default function App() {
   };
 
   const addSong = (song, playNext = false) => {
-    recordSongToHistory(song); // บันทึกลงประวัติการร้องอัตโนมัติ
+    recordSongToHistory(song);
 
     if (viewMode === 'remote') {
       sendCommand({ type: playNext ? 'PLAY_NEXT' : 'ADD_QUEUE', song });
@@ -1146,9 +1131,10 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 3: จัดการคิวเพลง */}
+          {/* TAB 3: จัดการคิวเพลง (มีปุ่มเพลงโปรด + ปุ่มเลื่อนลูกศร) */}
           {mobileTab === 'queue' && (
             <div className="space-y-4 md:space-y-6">
+              {/* เพลงที่กำลังเล่นอยู่ */}
               <div className="p-3.5 md:p-4 rounded-2xl bg-zinc-900 border border-cyan-500/30 flex items-center gap-3.5 md:gap-4">
                 <div className="w-16 h-12 md:w-24 md:h-16 rounded-xl overflow-hidden bg-black shrink-0 border border-cyan-500/40">
                   {currentSong ? (
@@ -1172,6 +1158,20 @@ export default function App() {
                     {currentSong ? currentSong.artist : '-'}
                   </p>
                 </div>
+
+                {currentSong && (
+                  <button
+                    onClick={() => toggleFavorite(currentSong)}
+                    className={`p-2 rounded-xl transition active:scale-90 shrink-0 ${
+                      favorites.some((f) => f.ytId === currentSong.ytId)
+                        ? 'text-amber-400 bg-amber-400/10'
+                        : 'text-zinc-500 hover:text-zinc-300 bg-zinc-800'
+                    }`}
+                    title="บันทึกเพลงที่ร้องอยู่เป็นเพลงโปรด"
+                  >
+                    <Star size={16} fill={favorites.some((f) => f.ytId === currentSong.ytId) ? 'currentColor' : 'none'} />
+                  </button>
+                )}
               </div>
 
               <div>
@@ -1179,82 +1179,83 @@ export default function App() {
                   <span className="text-xs md:text-sm font-bold text-zinc-300">
                     รายการคิวถัดไป ({queue.length} เพลง)
                   </span>
-                  <span className="text-[10px] md:text-xs text-zinc-500">แตะค้างที่ไอคอนเพื่อลากสลับคิว</span>
+                  <span className="text-[10px] md:text-xs text-zinc-500">กดลูกศรเพื่อสลับลำดับเพลง</span>
                 </div>
 
                 {queue.length === 0 ? (
                   <div className="text-center py-12 md:py-20 text-zinc-600 text-xs md:text-sm bg-zinc-900/40 rounded-2xl border border-zinc-800/50">
-                    ไม่มีเพลงในคิว<br />ไปที่แท็บ "ค้นหาเพลง" เพื่อเพิ่มเพลงได้เลย
+                    ไม่มีเพลงในคิว<br />ไปที่แท็บ "ค้นหา" หรือ "คลังเพลง" เพื่อเพิ่มเพลงได้เลย
                   </div>
                 ) : (
                   <div className="space-y-2 md:space-y-3">
-                    {queue.map((song, idx) => (
-                      <div 
-                        key={`${song.id}-${idx}`}
-                        data-queue-idx={idx}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, idx)}
-                        onDragOver={handleDragOver}
-                        onDragEnter={(e) => handleDragEnter(e, idx)}
-                        onDragEnd={handleDragEnd}
-                        className={`flex items-center gap-2.5 md:gap-3.5 p-2 md:p-3 bg-zinc-900 border rounded-2xl transition touch-manipulation ${
-                          draggedIndex === idx 
-                            ? 'border-cyan-500 bg-zinc-800/90 scale-[0.98]' 
-                            : 'border-zinc-800'
-                        }`}
-                      >
+                    {queue.map((song, idx) => {
+                      const isFav = favorites.some((f) => f.ytId === song.ytId);
+                      return (
                         <div 
-                          onTouchStart={(e) => handleTouchStart(e, idx)}
-                          onTouchMove={handleTouchMove}
-                          onTouchEnd={handleTouchEnd}
-                          className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-cyan-400 p-1.5 shrink-0 touch-none select-none"
-                          title="แตะค้างแล้วลากสลับคิว"
+                          key={`${song.id}-${idx}`}
+                          className="flex items-center gap-2.5 md:gap-3.5 p-2 md:p-3 bg-zinc-900 border border-zinc-800 rounded-2xl"
                         >
-                          <GripVertical className="w-4 h-4 md:w-5 md:h-5" />
-                        </div>
+                          <span className="text-xs md:text-sm font-bold text-cyan-400 w-4 md:w-5 text-center shrink-0">
+                            {idx + 1}
+                          </span>
+                          
+                          <div className="w-12 h-9 md:w-20 md:h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                            <img 
+                              src={getThumbnail(song.ytId, song.thumbnail)} 
+                              alt="" 
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
 
-                        <span className="text-xs md:text-sm font-bold text-cyan-400 w-3 md:w-5 text-center shrink-0">{idx + 1}</span>
-                        
-                        <div className="w-12 h-9 md:w-20 md:h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
-                          <img 
-                            src={getThumbnail(song.ytId, song.thumbnail)} 
-                            alt="" 
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
+                          <div className="truncate flex-1 min-w-0 pr-1">
+                            <p className="text-xs md:text-sm font-semibold text-white truncate">{song.title}</p>
+                            <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
+                          </div>
 
-                        <div className="truncate flex-1 min-w-0 pr-1">
-                          <p className="text-xs md:text-sm font-semibold text-white truncate">{song.title}</p>
-                          <p className="text-[10px] md:text-xs text-zinc-400 truncate mt-0.5">{song.artist}</p>
-                        </div>
+                          <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
+                            {/* ปุ่มเพิ่มเป็นเพลงโปรดในคิว */}
+                            <button
+                              onClick={() => toggleFavorite(song)}
+                              className={`p-1.5 md:p-2 rounded-lg transition active:scale-90 ${
+                                isFav ? 'text-amber-400 bg-amber-400/10' : 'text-zinc-500 hover:text-zinc-300 bg-zinc-800'
+                              }`}
+                              title={isFav ? 'ลบจากเพลงโปรด' : 'เพิ่มในเพลงโปรด'}
+                            >
+                              <Star size={15} fill={isFav ? 'currentColor' : 'none'} />
+                            </button>
 
-                        <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
-                          <button
-                            disabled={idx === 0}
-                            onClick={() => moveQueue(idx, -1)}
-                            className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
-                            title="เลื่อนขึ้น"
-                          >
-                            <ChevronUp className="w-3.5 h-3.5 md:w-4 md:h-4" />
-                          </button>
-                          <button
-                            disabled={idx === queue.length - 1}
-                            onClick={() => moveQueue(idx, 1)}
-                            className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
-                            title="เลื่อนลง"
-                          >
-                            <ChevronDown className="w-3.5 h-3.5 md:w-4 md:h-4" />
-                          </button>
-                          <button
-                            onClick={() => removeQueueItem(idx)}
-                            className="p-1.5 md:p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white active:scale-90 ml-0.5 transition"
-                            title="ลบคิว"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
-                          </button>
+                            {/* ปุ่มเลื่อนคิวขึ้น */}
+                            <button
+                              disabled={idx === 0}
+                              onClick={() => moveQueue(idx, -1)}
+                              className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                              title="เลื่อนขึ้น"
+                            >
+                              <ChevronUp className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            </button>
+
+                            {/* ปุ่มเลื่อนคิวลง */}
+                            <button
+                              disabled={idx === queue.length - 1}
+                              onClick={() => moveQueue(idx, 1)}
+                              className="p-1.5 md:p-2 rounded-lg bg-zinc-800 text-zinc-300 disabled:opacity-20 active:scale-90"
+                              title="เลื่อนลง"
+                            >
+                              <ChevronDown className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            </button>
+
+                            {/* ปุ่มลบคิว */}
+                            <button
+                              onClick={() => removeQueueItem(idx)}
+                              className="p-1.5 md:p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white active:scale-90 ml-0.5 transition"
+                              title="ลบคิว"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1360,7 +1361,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* ปุ่มคิดคะแนนปาร์ตี้ */}
                 <button
                   onClick={() => sendCommand({ type: 'FINISH_WITH_SCORE' })}
                   className="w-full py-3 bg-zinc-950 hover:bg-zinc-800 border border-cyan-500/40 text-cyan-300 font-bold rounded-xl text-xs md:text-sm flex items-center justify-center gap-2 transition active:scale-95"
@@ -1423,39 +1423,6 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none relative">
-      {/* หน้าต่างแสดงคะแนนบนจอทีวี (Karaoke Score Modal) */}
-      {scoreData && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-50 animate-in fade-in zoom-in duration-300">
-          <div className="bg-zinc-900/90 border border-cyan-500/40 rounded-3xl p-8 max-w-sm w-full text-center space-y-6 shadow-2xl relative">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center shadow-lg">
-              <Award size={32} />
-            </div>
-
-            <div className="space-y-1">
-              <span className="text-xs uppercase tracking-widest text-cyan-400 font-bold">ผลคะแนนการร้อง</span>
-              <h3 className="text-base font-bold text-white truncate max-w-xs mx-auto">{scoreData.songTitle}</h3>
-            </div>
-
-            <div className="py-2">
-              <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 tracking-tight">
-                {scoreData.score}
-              </div>
-              <span className="text-xs text-zinc-500 font-semibold tracking-wider uppercase mt-1 block">คะแนนเต็ม 100</span>
-            </div>
-
-            <div className="pt-2">
-              <button
-                onClick={dismissScoreAndNext}
-                className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition active:scale-95"
-              >
-                ร้องเพลงถัดไปทันที
-              </button>
-              <span className="text-[11px] text-zinc-500 mt-2 block">เพลงถัดไปจะเริ่มอัตโนมัติใน 5 วินาที</span>
-            </div>
-          </div>
-        </div>
-      )}
-
       {toastMessage && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
           {toastMessage}
@@ -1492,7 +1459,6 @@ export default function App() {
               <Maximize2 size={16} />
             </button>
 
-            {/* แสดงจำนวนรีโมทที่ต่ออยู่พร้อมกัน */}
             <button
               onClick={() => setShowRemoteModal(true)}
               className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white transition shadow-sm"
@@ -1739,6 +1705,39 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* หน้าต่างแสดงคะแนนบนจอทีวี (ย้ายมาไว้ข้างนอกสุด และใช้ z-[100] เพื่อแสดงบนโหมดเต็มจอเสมอ) */}
+      {scoreData && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[100] animate-in fade-in zoom-in duration-300">
+          <div className="bg-zinc-900/95 border border-cyan-500/40 rounded-3xl p-8 max-w-sm w-full text-center space-y-6 shadow-2xl relative">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center shadow-lg">
+              <Award size={32} />
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-xs uppercase tracking-widest text-cyan-400 font-bold">ผลคะแนนการร้อง</span>
+              <h3 className="text-base font-bold text-white truncate max-w-xs mx-auto">{scoreData.songTitle}</h3>
+            </div>
+
+            <div className="py-2">
+              <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 tracking-tight">
+                {scoreData.score}
+              </div>
+              <span className="text-xs text-zinc-500 font-semibold tracking-wider uppercase mt-1 block">คะแนนเต็ม 100</span>
+            </div>
+
+            <div className="pt-2">
+              <button
+                onClick={dismissScoreAndNext}
+                className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition active:scale-95"
+              >
+                ร้องเพลงถัดไปทันที
+              </button>
+              <span className="text-[11px] text-zinc-500 mt-2 block">เพลงถัดไปจะเริ่มอัตโนมัติใน 5 วินาที</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
