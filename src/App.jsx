@@ -278,7 +278,7 @@ export default function App() {
       handleNextSong();
       return;
     }
-    const score = Math.floor(Math.random() * 18) + 82; // สุ่มคะแนน 82 - 99
+    const score = Math.floor(Math.random() * 91) + 10; // สุ่มคะแนน 10 - 100
     const payload = { show: true, score, songTitle: song.title };
     setScoreData(payload);
     broadcastToAllRemotes({ type: 'SHOW_SCORE', data: payload });
