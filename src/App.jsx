@@ -5,7 +5,8 @@ import {
   QrCode, Smartphone, ListMusic, X, Check, Wifi, WifiOff, Loader2,
   Trash2, Volume2, VolumeX, Volume1, Maximize2, Minimize2, 
   SlidersHorizontal, Link as LinkIcon, Tv, ArrowLeft,
-  ChevronUp, ChevronDown, Star, History, Award, Zap, Music, Mic
+  ChevronUp, ChevronDown, Star, History, Award, Zap, Music, Mic,
+  FolderPlus
 } from 'lucide-react';
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
@@ -22,6 +23,18 @@ const extractYtId = (url) => {
   const match = cleanUrl.match(regExp);
   if (match && match[1]) return match[1];
   if (cleanUrl.length === 11 && !cleanUrl.includes(' ') && !cleanUrl.includes('/')) return cleanUrl;
+  return null;
+};
+
+// สกัด Playlist ID จาก URL (เช่น list=PL... หรือรหัสเพลย์ลิสต์ตรงๆ)
+const extractPlaylistId = (url) => {
+  if (!url) return null;
+  const cleanUrl = url.trim();
+  const match = cleanUrl.match(/[?&]list=([^#&?]+)/);
+  if (match && match[1]) return match[1];
+  if (/^[A-Za-z0-9_-]{12,}$/.test(cleanUrl) && !cleanUrl.includes('/') && !cleanUrl.includes('.')) {
+    return cleanUrl;
+  }
   return null;
 };
 
@@ -85,6 +98,7 @@ export default function App() {
   const [searchError, setSearchError] = useState('');
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [directUrl, setDirectUrl] = useState('');
+  const [isImportingPlaylist, setIsImportingPlaylist] = useState(false);
 
   // Favorites & History States (บันทึกลง LocalStorage)
   const [favorites, setFavorites] = useState(() => {
@@ -127,7 +141,7 @@ export default function App() {
     setTimeout(() => setToastMessage(''), 2500);
   };
 
-  // แคชคิวเพลงลง LocalStorage ตลอดเวลา
+  // บันทึกแคชคิวเพลงลง LocalStorage ตลอดเวลา
   useEffect(() => {
     try {
       localStorage.setItem('karaoke_cached_queue', JSON.stringify(queue));
@@ -297,7 +311,7 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // 1. ฝั่งจอทีวี (TV Host - รองรับหลายรีโมทพร้อมกัน)
+  // 1. ฝั่งจอทีวี (TV Host)
   // -------------------------------------------------------------
   const initHost = () => {
     setViewMode('tv');
@@ -358,7 +372,6 @@ export default function App() {
           return;
         }
 
-        // รีโมทขอข้อมูลคิวเมื่อสลับแอปกลับมา
         if (data.type === 'REQUEST_SYNC') {
           sendFullSync();
           return;
@@ -379,6 +392,31 @@ export default function App() {
                 return next;
               });
               showToast(`เพิ่มเพลง: ${data.song.title}`);
+            }
+            break;
+          case 'ADD_QUEUE_BULK':
+            if (data.songs && data.songs.length > 0) {
+              data.songs.forEach(s => recordSongToHistory(s));
+              if (!currentSongRef.current) {
+                const [first, ...rest] = data.songs;
+                setCurrentSong(first);
+                currentSongRef.current = first;
+                setQueue((prev) => {
+                  const next = [...prev, ...rest];
+                  queueRef.current = next;
+                  broadcastToAllRemotes({ type: 'SYNC', queue: next, currentSong: first });
+                  return next;
+                });
+                showToast(`กำลังเล่น: ${first.title} (+${rest.length} เพลง)`);
+              } else {
+                setQueue((prev) => {
+                  const next = [...prev, ...data.songs];
+                  queueRef.current = next;
+                  broadcastToAllRemotes({ type: 'SYNC', queue: next });
+                  return next;
+                });
+                showToast(`เพิ่มเพลงจาก Playlist ${data.songs.length} เพลงลงคิวแล้ว`);
+              }
             }
             break;
           case 'PLAY_NEXT':
@@ -494,7 +532,7 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // 2. ฝั่งมือถือ (Remote Client - Auto Reconnect & Watchdog)
+  // 2. ฝั่งมือถือ (Remote Client)
   // -------------------------------------------------------------
   const connectToHost = useCallback((targetCode) => {
     if (!targetCode) return;
@@ -515,7 +553,6 @@ export default function App() {
       conn.on('open', () => {
         setConnectionStatus('connected');
         setShowRemoteModal(false);
-        // ร้องขอคิวเพลงและสถานะปัจจุบันจากทีวีทันทีที่ต่อติด
         try {
           conn.send({ type: 'REQUEST_SYNC' });
         } catch (_) {}
@@ -562,7 +599,6 @@ export default function App() {
     });
   }, []);
 
-  // ระบบเฝ้าระวังการเชื่อมต่อตลอดเวลา (Auto-Reconnect เมื่อสลับแอป)
   useEffect(() => {
     if (viewMode !== 'remote') return;
 
@@ -749,7 +785,7 @@ export default function App() {
   const handleAddDirectUrl = (playNext = false) => {
     const videoId = extractYtId(directUrl);
     if (!videoId) {
-      alert('กรุณาระบุลิงก์ YouTube ที่ถูกต้อง');
+      alert('กรุณาระบุลิงก์ YouTube ที่ถูกต้อง (หรือหากเป็นเพลย์ลิสต์ให้กดปุ่ม "นำเข้าเพลย์ลิสต์")');
       return;
     }
 
@@ -766,6 +802,83 @@ export default function App() {
     setDirectUrl('');
     setShowUrlInput(false);
     showToast(playNext ? 'แทรกเพลงจากลิงก์แล้ว' : 'เพิ่มเพลงจากลิงก์ในคิวแล้ว');
+  };
+
+  // นำเข้าทั้งเพลย์ลิสต์ YouTube (ดึงเพลงได้สูงสุด 50 เพลงต่อครั้ง กินโควต้าเพียง 1 Unit)
+  const handleImportPlaylist = async () => {
+    const playlistId = extractPlaylistId(directUrl);
+    if (!playlistId) {
+      alert('กรุณาระบุลิงก์ YouTube Playlist (เช่น https://www.youtube.com/playlist?list=PL...) หรือ Playlist ID ที่ถูกต้อง');
+      return;
+    }
+
+    if (!API_KEY) {
+      alert('ยังไม่ได้ระบุ VITE_YOUTUBE_API_KEY ในระบบ');
+      return;
+    }
+
+    setIsImportingPlaylist(true);
+    try {
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${encodeURIComponent(playlistId)}&key=${API_KEY}`
+      );
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+
+      // กรองคลิปที่ถูกลบ คลิปส่วนตัว หรือคลิปที่เล่นไม่ได้ออก
+      const items = (data.items || [])
+        .filter(item => item.snippet && item.snippet.title !== 'Private video' && item.snippet.title !== 'Deleted video' && item.snippet.resourceId?.videoId)
+        .map((item, idx) => {
+          const vid = item.snippet.resourceId.videoId;
+          return {
+            id: `${vid}-${Date.now()}-${idx}`,
+            ytId: vid,
+            title: item.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'"),
+            artist: item.snippet.videoOwnerChannelTitle || item.snippet.channelTitle || 'YouTube Playlist',
+            thumbnail: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || `https://img.youtube.com/vi/${vid}/mqdefault.jpg`,
+            isKaraoke: searchMode === 'karaoke',
+          };
+        });
+
+      if (items.length === 0) {
+        showToast('ไม่พบเพลงในเพลย์ลิสต์นี้ (หรืออาจตั้งค่าเป็น Private)');
+        return;
+      }
+
+      if (viewMode === 'remote') {
+        sendCommand({ type: 'ADD_QUEUE_BULK', songs: items });
+        showToast(`นำเข้าเพลย์ลิสต์ ${items.length} เพลงไปยังทีวีแล้ว`);
+      } else {
+        items.forEach(s => recordSongToHistory(s));
+        if (!currentSong) {
+          const [first, ...rest] = items;
+          setCurrentSong(first);
+          currentSongRef.current = first;
+          setQueue((prev) => {
+            const next = [...prev, ...rest];
+            queueRef.current = next;
+            broadcastToAllRemotes({ type: 'SYNC', queue: next, currentSong: first });
+            return next;
+          });
+          showToast(`กำลังเล่น: ${first.title} (+${rest.length} เพลง)`);
+        } else {
+          setQueue((prev) => {
+            const next = [...prev, ...items];
+            queueRef.current = next;
+            broadcastToAllRemotes({ type: 'SYNC', queue: next });
+            return next;
+          });
+          showToast(`เพิ่มเพลย์ลิสต์ ${items.length} เพลงลงคิวแล้ว`);
+        }
+      }
+
+      setDirectUrl('');
+      setShowUrlInput(false);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการดึง Playlist: ' + err.message);
+    } finally {
+      setIsImportingPlaylist(false);
+    }
   };
 
   const addSong = (song, playNext = false) => {
@@ -980,6 +1093,7 @@ export default function App() {
                   </button>
                 </form>
 
+                {/* ช่องใส่ลิงก์ YouTube เดี่ยว หรือ ลิงก์ Playlist */}
                 <div className="mt-2.5 pt-2.5 border-t border-zinc-800">
                   <button
                     type="button"
@@ -987,7 +1101,7 @@ export default function App() {
                     className="text-[11px] md:text-xs font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition active:scale-95"
                   >
                     <LinkIcon size={14} />
-                    <span>{showUrlInput ? 'ซ่อนช่องใส่ลิงก์' : 'วางลิงก์ YouTube โดยตรง (ไม่เสียโควต้า)'}</span>
+                    <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์เพลงเดี่ยว หรือ ลิงก์ YouTube Playlist'}</span>
                   </button>
 
                   {showUrlInput && (
@@ -996,21 +1110,38 @@ export default function App() {
                         type="text"
                         value={directUrl}
                         onChange={(e) => setDirectUrl(e.target.value)}
-                        placeholder="วางลิงก์ YouTube ที่นี่..."
+                        placeholder="วางลิงก์วิดีโอเดี่ยว หรือลิงก์ Playlist (list=PL...)"
                         className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 md:px-3.5 py-1.5 md:py-2.5 text-xs md:text-sm focus:outline-none focus:border-cyan-500 text-white"
                       />
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {/* ปุ่มนำเข้า Playlist */}
                         <button
                           type="button"
-                          onClick={() => handleAddDirectUrl(true)}
-                          className="px-3 md:px-4 py-1.5 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] md:text-xs font-bold active:scale-95 flex items-center gap-1"
+                          disabled={isImportingPlaylist || !directUrl.trim()}
+                          onClick={handleImportPlaylist}
+                          className="px-3 md:px-4 py-1.5 bg-cyan-500/15 hover:bg-cyan-500 hover:text-zinc-950 text-cyan-300 border border-cyan-500/40 rounded-lg text-[10px] md:text-xs font-bold active:scale-95 transition flex items-center gap-1 disabled:opacity-40"
+                          title="ดึงเพลงทั้งหมดใน Playlist เข้าคิวในคลิกเดียว"
                         >
-                          <Zap size={12} /> แทรกคิว
+                          {isImportingPlaylist ? <Loader2 size={13} className="animate-spin" /> : <FolderPlus size={13} />}
+                          <span>นำเข้าทั้งเพลย์ลิสต์</span>
                         </button>
+
+                        {/* ปุ่มแทรกคิวเพลงเดี่ยว */}
                         <button
                           type="button"
+                          disabled={isImportingPlaylist || !directUrl.trim()}
+                          onClick={() => handleAddDirectUrl(true)}
+                          className="px-3 md:px-3.5 py-1.5 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-[10px] md:text-xs font-bold active:scale-95 flex items-center gap-1 disabled:opacity-40"
+                        >
+                          <Zap size={12} /> แทรก
+                        </button>
+
+                        {/* ปุ่มเพิ่มในคิวเพลงเดี่ยว */}
+                        <button
+                          type="button"
+                          disabled={isImportingPlaylist || !directUrl.trim()}
                           onClick={() => handleAddDirectUrl(false)}
-                          className="px-3 md:px-4 py-1.5 bg-cyan-500 text-zinc-950 rounded-lg text-[10px] md:text-xs font-bold active:scale-95"
+                          className="px-3 md:px-3.5 py-1.5 bg-cyan-500 text-zinc-950 hover:bg-cyan-400 rounded-lg text-[10px] md:text-xs font-bold active:scale-95 disabled:opacity-40"
                         >
                           + เพิ่มในคิว
                         </button>
@@ -1095,7 +1226,7 @@ export default function App() {
               <div className="space-y-2 md:space-y-3">
                 {(libraryTab === 'favorites' ? favorites : history).length === 0 ? (
                   <div className="text-center py-16 text-zinc-600 text-xs md:text-sm bg-zinc-900/30 rounded-2xl border border-zinc-800/40">
-                    {libraryTab === 'favorites' ? 'ยังไม่มีเพลงโปรด กดปุ่มดาวในช่องค้นหาเพื่อบันทึกเพลงที่ชอบ' : 'ยังไม่มีประวัติการร้องเพลง'}
+                    {libraryTab === 'favorites' ? 'ยังไม่มีเพลงโปรด กดปุ่มดาวในช่องค้นหาหรือในคิวเพื่อบันทึกเพลงที่ชอบ' : 'ยังไม่มีประวัติการร้องเพลง'}
                   </div>
                 ) : (
                   (libraryTab === 'favorites' ? favorites : history).map((song) => {
@@ -1423,6 +1554,39 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none relative">
+      {/* หน้าต่างแสดงคะแนนบนจอทีวี (Karaoke Score Modal - z-[100] ลอยเหนือกราฟิกทุกอย่าง) */}
+      {scoreData && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[100] animate-in fade-in zoom-in duration-300">
+          <div className="bg-zinc-900/95 border border-cyan-500/40 rounded-3xl p-8 max-w-sm w-full text-center space-y-6 shadow-2xl relative">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center shadow-lg">
+              <Award size={32} />
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-xs uppercase tracking-widest text-cyan-400 font-bold">ผลคะแนนการร้อง</span>
+              <h3 className="text-base font-bold text-white truncate max-w-xs mx-auto">{scoreData.songTitle}</h3>
+            </div>
+
+            <div className="py-2">
+              <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 tracking-tight">
+                {scoreData.score}
+              </div>
+              <span className="text-xs text-zinc-500 font-semibold tracking-wider uppercase mt-1 block">คะแนนเต็ม 100</span>
+            </div>
+
+            <div className="pt-2">
+              <button
+                onClick={dismissScoreAndNext}
+                className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition active:scale-95"
+              >
+                ร้องเพลงถัดไปทันที
+              </button>
+              <span className="text-[11px] text-zinc-500 mt-2 block">เพลงถัดไปจะเริ่มอัตโนมัติใน 5 วินาที</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {toastMessage && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-cyan-500 text-zinc-950 text-sm font-bold px-6 py-2.5 rounded-full shadow-2xl">
           {toastMessage}
@@ -1594,6 +1758,7 @@ export default function App() {
                 </button>
               </form>
 
+              {/* ช่องวางลิงก์ YouTube เดี่ยว หรือ ลิงก์ Playlist บนทีวี */}
               <div className="mt-2 pt-2 border-t border-zinc-800">
                 <button
                   type="button"
@@ -1601,7 +1766,7 @@ export default function App() {
                   className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 transition"
                 >
                   <LinkIcon size={13} />
-                  <span>{showUrlInput ? 'ซ่อนช่องใส่ลิงก์' : 'วางลิงก์ YouTube โดยตรง (ไม่เสียโควต้า)'}</span>
+                  <span>{showUrlInput ? '▲ ซ่อนช่องใส่ลิงก์' : '🔗 วางลิงก์เพลงเดี่ยว หรือ ลิงก์ YouTube Playlist'}</span>
                 </button>
 
                 {showUrlInput && (
@@ -1610,21 +1775,33 @@ export default function App() {
                       type="text"
                       value={directUrl}
                       onChange={(e) => setDirectUrl(e.target.value)}
-                      placeholder="วางลิงก์ YouTube ที่นี่..."
+                      placeholder="วางลิงก์วิดีโอ หรือลิงก์ Playlist (list=PL...)"
                       className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-cyan-500 text-white"
                     />
-                    <div className="flex justify-end gap-1.5">
+                    <div className="flex flex-wrap justify-end gap-1.5">
                       <button
                         type="button"
+                        disabled={isImportingPlaylist || !directUrl.trim()}
+                        onClick={handleImportPlaylist}
+                        className="px-2.5 py-1 bg-cyan-500/15 hover:bg-cyan-500 hover:text-zinc-950 text-cyan-300 border border-cyan-500/40 rounded text-[10px] font-bold flex items-center gap-1 transition disabled:opacity-40"
+                        title="ดึงเพลงทั้งหมดใน Playlist เข้าคิวในคลิกเดียว"
+                      >
+                        {isImportingPlaylist ? <Loader2 size={12} className="animate-spin" /> : <FolderPlus size={12} />}
+                        <span>นำเข้าเพลย์ลิสต์</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isImportingPlaylist || !directUrl.trim()}
                         onClick={() => handleAddDirectUrl(true)}
-                        className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold flex items-center gap-1"
+                        className="px-2 py-1 bg-zinc-800 text-zinc-300 hover:text-white rounded text-[10px] font-bold flex items-center gap-1 disabled:opacity-40"
                       >
                         <Zap size={11} /> แทรก
                       </button>
                       <button
                         type="button"
+                        disabled={isImportingPlaylist || !directUrl.trim()}
                         onClick={() => handleAddDirectUrl(false)}
-                        className="px-2 py-1 bg-cyan-500 text-zinc-950 rounded text-[10px] font-bold"
+                        className="px-2 py-1 bg-cyan-500 text-zinc-950 hover:bg-cyan-400 rounded text-[10px] font-bold disabled:opacity-40"
                       >
                         + คิว
                       </button>
@@ -1705,39 +1882,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      {/* หน้าต่างแสดงคะแนนบนจอทีวี (ย้ายมาไว้ข้างนอกสุด และใช้ z-[100] เพื่อแสดงบนโหมดเต็มจอเสมอ) */}
-      {scoreData && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[100] animate-in fade-in zoom-in duration-300">
-          <div className="bg-zinc-900/95 border border-cyan-500/40 rounded-3xl p-8 max-w-sm w-full text-center space-y-6 shadow-2xl relative">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center shadow-lg">
-              <Award size={32} />
-            </div>
-
-            <div className="space-y-1">
-              <span className="text-xs uppercase tracking-widest text-cyan-400 font-bold">ผลคะแนนการร้อง</span>
-              <h3 className="text-base font-bold text-white truncate max-w-xs mx-auto">{scoreData.songTitle}</h3>
-            </div>
-
-            <div className="py-2">
-              <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 tracking-tight">
-                {scoreData.score}
-              </div>
-              <span className="text-xs text-zinc-500 font-semibold tracking-wider uppercase mt-1 block">คะแนนเต็ม 100</span>
-            </div>
-
-            <div className="pt-2">
-              <button
-                onClick={dismissScoreAndNext}
-                className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-bold rounded-xl text-xs transition active:scale-95"
-              >
-                ร้องเพลงถัดไปทันที
-              </button>
-              <span className="text-[11px] text-zinc-500 mt-2 block">เพลงถัดไปจะเริ่มอัตโนมัติใน 5 วินาที</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showRemoteModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
